@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Ash &amp; Iron</title>
+<meta name="description" content="Фитнес-RPG в пиксельном тёмном фэнтези: отжимания, приседания и прыжки управляют боем.">
+<meta name="theme-color" content="#0a060c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ash &amp; Iron">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon_192.png">
+<link rel="apple-touch-icon" href="icon_180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game" width="640" height="360"></canvas>
+<div id="gate">
+  <img src="icon_192.png" alt="" width="96" height="96">
+  <h1>ASH &amp; IRON</h1>
+  <p>Фитнес-RPG: отжимания, приседания и «звёздочка» управляют боем и прокачкой.</p>
+  <button id="start-camera">ИГРАТЬ С КАМЕРОЙ</button>
+  <button id="start-manual" class="secondary">БЕЗ КАМЕРЫ (КНОПКИ)</button>
+  <p id="gate-status">Загрузка…</p>
+  <p class="hint">Совет: поставьте телефон на пол у стены и отойдите на 2–3 м.<br>
+  Добавьте игру на главный экран: Safari → «Поделиться» → «На экран Домой»;
+  Chrome → ⋮ → «Установить приложение».</p>
+</div>
+<script type="module">
+  import { boot } from "./game.js";
+  boot();
+  // офлайн-кэш нужен только сайту; в Android-приложении (Capacitor) всё и так лежит внутри
+  if ("serviceWorker" in navigator && !window.Capacitor) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>

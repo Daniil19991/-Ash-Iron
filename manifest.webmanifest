@@ -1,0 +1,16 @@
+{
+  "name": "Ash & Iron — фитнес-RPG",
+  "short_name": "Ash & Iron",
+  "description": "Фитнес-RPG в пиксельном тёмном фэнтези: упражнения управляют боем и прокачкой.",
+  "lang": "ru",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#0a060c",
+  "theme_color": "#0a060c",
+  "icons": [
+    { "src": "icon_192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon_512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
