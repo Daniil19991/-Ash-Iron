@@ -403,7 +403,7 @@ class Game {
     }
     c.drawImage(this.world, ox, oy, W, GAME_H);
     this.scene.drawUi();
-    if (this.portrait) {
+    if (this.portrait && !this.scene.ownsPanel) {
       this.cameraWidget();
       if (this.scene.manual) this.manualButtons();
     }
@@ -445,6 +445,7 @@ class TitleScene extends Scene {
     ];
     this.aura = new SwordAura();
     this.confirmT = 0;
+    this.ownsPanel = true; // в портрете меню занимает место панели камеры
   }
   newGame() {
     // Защита от случайного касания: прогресс стирается только со второго нажатия
@@ -458,8 +459,20 @@ class TitleScene extends Scene {
     g.run = null;
     g.change(new BonfireScene(g));
   }
+  /** Крупные кнопки: на телефоне меню должно читаться с вытянутой руки. */
   rects() {
-    return this.items.map((_, i) => [32, 104 + i * 34, 232, 28]);
+    const g = this.game, n = this.items.length;
+    if (g.portrait) {
+      // под картинкой: от строки статуса до низа экрана
+      const top = GAME_H + 44, gap = 14;
+      const h = Math.min(104, Math.floor((g.H - top - 16 - gap * (n - 1)) / n));
+      const y0 = top + Math.max(0, Math.floor((g.H - top - 16 - n * h - gap * (n - 1)) / 2));
+      return this.items.map((_, i) => [40, y0 + i * (h + gap), W - 80, h]);
+    }
+    return this.items.map((_, i) => [24, 90 + i * 41, 290, 35]);
+  }
+  textSize(r) {
+    return this.game.portrait ? (r[3] >= 64 ? 24 : 16) : 12;
   }
   handle() {
     const g = this.game;
@@ -506,10 +519,13 @@ class TitleScene extends Scene {
     g.text("фитнес-RPG: тренируй тело, чтобы выжить во тьме", W / 2, 66, 8, COL.dim, "center");
     this.rects().forEach((r, i) => {
       const confirm = i === this.items.length - 1 && this.confirmT > 0;
-      g.button(r, confirm ? "Стереть? Ещё раз" : this.items[i][0], { selected: i === this.index, color: confirm ? COL.red : undefined });
+      g.button(r, confirm ? "Стереть? Ещё раз" : this.items[i][0],
+        { selected: i === this.index, color: confirm ? COL.red : undefined, size: this.textSize(r) });
     });
     const foe = isBossWave(p.wave) ? "БОСС" : Skeleton.NAMES[enemyKind(p.wave)].toLowerCase();
-    g.text(`Ур.${p.level} Пепел:${p.souls} ${LOCATIONS[locationFor(p.wave)].name}: ${foe} #${p.wave}`, 12, GAME_H - 16, 8, COL.dim);
+    const status = `Ур.${p.level} Пепел:${p.souls} ${LOCATIONS[locationFor(p.wave)].name}: ${foe} #${p.wave}`;
+    if (g.portrait) g.text(status, W / 2, GAME_H + 14, status.length * 12 <= W - 24 ? 12 : 8, COL.text, "center");
+    else g.text(status, 12, GAME_H - 16, 8, COL.dim);
     if (!g.portrait) g.text("ПК: J K L, тест F2-F4", W - 12, GAME_H - 16, 8, COL.dim, "right");
   }
 }
