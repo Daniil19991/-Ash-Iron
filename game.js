@@ -1658,6 +1658,22 @@ const LB_REFRESH = [270, 322, 170, 26];
 const LB_BACK = [448, 322, 180, 26];
 const LB_ROWS = 10;
 
+/** Раскладка рейтинга: альбомная или вертикальная во весь экран телефона. */
+function lbLayout(g) {
+  if (!g.portrait) {
+    return {
+      name: LB_NAME, refresh: LB_REFRESH, back: LB_BACK, rows: LB_ROWS, fs: 8, btnFs: 8, head: 56, top: 76, step: 21,
+      cols: [22, 64, 400, 486, 560], status: [290, 76, 12, 8],
+    };
+  }
+  const back = [W / 2 + 8, g.H - 88, W / 2 - 24, 72], refresh = [16, g.H - 88, W / 2 - 24, 72];
+  const name = [16, g.H - 172, W - 32, 72];
+  const status = [name[1] - 64, 36, 24, 16];
+  const top = GAME_H + 52, step = 40;
+  const rows = Math.max(5, Math.min(20, Math.floor((status[0] - 12 - top) / step)));
+  return { name, refresh, back, rows, fs: 16, btnFs: 16, head: GAME_H + 16, top, step, cols: [20, 76, 380, 476, 548], status };
+}
+
 /** Рейтинг по побеждённым боссам и уровню. Без сети — сохранённая таблица, игра не ждёт сервер. */
 class LeaderboardScene extends Scene {
   constructor(game) {
@@ -1690,9 +1706,29 @@ class LeaderboardScene extends Scene {
   }
   handle() {
     const g = this.game;
-    if (g.key("Escape") || g.tapped(LB_BACK)) return g.change(new TitleScene(g));
-    if (g.tapped(LB_REFRESH) || g.key("Enter")) return this.load();
-    if (g.tapped(LB_NAME)) return this.rename();
+    const L = lbLayout(g);
+    if (g.key("Escape") || g.tapped(L.back)) return g.change(new TitleScene(g));
+    if (g.tapped(L.refresh) || g.key("Enter")) return this.load();
+    if (g.tapped(L.name)) return this.rename();
+  }
+  get ownsPanel() {
+    return this.game.portrait;
+  }
+  /** «Чёлка» в портрете: заголовок и ваш результат крупно, на фоне замка. */
+  drawHeader() {
+    const g = this.game, b = g.profile.best, r = this.res;
+    g.text("РЕЙТИНГ", W / 2, 24, 40, COL.gold, "center");
+    g.text("по побеждённым боссам, затем по уровню", W / 2, 76, 12, COL.dim, "center");
+    const hs = heroSprite(g.player.sword, g.player.owned, g.skin), hero = anim(`${hs}_idle`, g.time, 1.5, 2);
+    g.ctx.drawImage(hero, 28, 324 - hero.height * 4, hero.width * 4, hero.height * 4); // рыцарь у карточки игрока
+    const cx = 136, cw = W - 16 - cx, mid = cx + cw / 2;
+    g.rect([cx, 120, cw, 200], "rgba(10,6,14,0.8)");
+    g.ctx.strokeStyle = COL.gold;
+    g.ctx.strokeRect(cx + 0.5, 120.5, cw - 1, 199);
+    g.text(g.profile.name, mid, 138, 24, COL.gold, "center");
+    g.text(r && r.rank ? `${r.rank} место` : "место: ...", mid, 180, 32, COL.text, "center");
+    const line = `Боссы ${b.bosses}  Ур. ${b.level}  Раунд ${b.wave}`;
+    g.text(line, mid, 240, line.length * 16 <= cw - 24 ? 16 : 12, COL.text, "center");
   }
   draw(c) {
     c.drawImage(IMG.castle_bg, 0, 0);
@@ -1700,9 +1736,12 @@ class LeaderboardScene extends Scene {
     c.fillRect(0, 0, CW, CH);
   }
   drawUi() {
-    const g = this.game, me = g.profile.id;
-    g.text("РЕЙТИНГ", 14, 14, 16, COL.gold);
-    g.text("по побеждённым боссам, затем по уровню", 14, 36, 8, COL.dim);
+    const g = this.game, me = g.profile.id, L = lbLayout(g), fs = L.fs;
+    if (g.portrait) this.drawHeader();
+    else {
+      g.text("РЕЙТИНГ", 14, 14, 16, COL.gold);
+      g.text("по побеждённым боссам, затем по уровню", 14, 36, 8, COL.dim);
+    }
     const r = this.res;
     let status = "Загрузка...", scol = COL.dim;
     if (r) {
@@ -1713,33 +1752,35 @@ class LeaderboardScene extends Scene {
       } else [status, scol] = ["Сервер рейтинга не подключён: показан ваш результат", "rgb(230,180,90)"];
       if (r.pending) status += " · ваш результат отправится при появлении сети";
     }
-    g.wrap(status, 76).forEach((line, i) => g.text(line, 14, 290 + i * 12, 8, scol));
-    const cols = [[22, "#"], [64, "ИМЯ"], [400, "БОССЫ"], [486, "УР."], [560, "РАУНД"]];
-    cols.forEach(([x, h]) => g.text(h, x, 56, 8, COL.dim));
-    g.rect([14, 68, W - 28, 1], "rgb(90,64,50)");
+    const [sy, swrap, sstep, ssize] = L.status;
+    g.wrap(status, swrap).forEach((line, i) => g.text(line, 14, sy + i * sstep, ssize, scol));
+    const [c0, c1, c2, c3, c4] = L.cols;
+    const cols = [[c0, "#"], [c1, "ИМЯ"], [c2, "БОССЫ"], [c3, "УР."], [c4, "РАУНД"]];
+    cols.forEach(([x, h]) => g.text(h, x, L.head, g.portrait ? 12 : 8, COL.dim));
+    g.rect([14, L.top - 8, W - 28, 1], "rgb(90,64,50)");
     if (r) {
-      const rows = r.rows.slice(0, LB_ROWS);
+      const rows = r.rows.slice(0, L.rows);
       const mine = r.rows.findIndex((x) => x.player_id === me);
       const show = rows.map((row, i) => [i + 1, row]);
-      if (mine >= LB_ROWS || (mine < 0 && r.rank)) {
-        show.length = LB_ROWS - 1;
+      if (mine >= L.rows || (mine < 0 && r.rank)) {
+        show.length = Math.min(show.length, L.rows - 1);
         const own = r.rows[mine] || { name: g.profile.name, ...g.profile.best, player_id: me };
         show.push([r.rank || mine + 1, own]);
       }
       show.forEach(([rank, row], i) => {
-        const y = 76 + i * 21, isMe = row.player_id === me;
-        if (isMe) g.rect([14, y - 4, W - 28, 19], "rgba(232,190,92,0.18)");
+        const y = L.top + i * L.step, isMe = row.player_id === me;
+        if (isMe) g.rect([14, y - L.step * 0.2, W - 28, L.step * 0.9], "rgba(232,190,92,0.18)");
         const col = isMe ? COL.gold : rank <= 3 ? "rgb(255,220,150)" : COL.text;
-        g.text(`${rank}`, 22, y, 8, col);
-        g.text(row.name, 64, y, 8, col);
-        g.text(`${row.bosses}`, 400, y, 8, col);
-        g.text(`${row.level}`, 486, y, 8, col);
-        g.text(`${row.wave}`, 560, y, 8, col);
+        g.text(`${rank}`, c0, y, fs, col);
+        g.text(row.name, c1, y, fs, col);
+        g.text(`${row.bosses}`, c2, y, fs, col);
+        g.text(`${row.level}`, c3, y, fs, col);
+        g.text(`${row.wave}`, c4, y, fs, col);
       });
     }
-    g.button(LB_NAME, `ИМЯ: ${g.profile.name}`);
-    g.button(LB_REFRESH, this.loading ? "..." : "ОБНОВИТЬ");
-    g.button(LB_BACK, "НАЗАД");
+    g.button(L.name, `ИМЯ: ${g.profile.name}`, { size: L.btnFs });
+    g.button(L.refresh, this.loading ? "..." : "ОБНОВИТЬ", { size: L.btnFs });
+    g.button(L.back, "НАЗАД", { size: L.btnFs });
   }
 }
 
@@ -1795,17 +1836,33 @@ class CameraScene extends Scene {
 // ------------------------------------------------------------------ Настройки
 const SETTINGS_KEY = "ash-and-iron-settings";
 const ALERT_LEVELS = [[0, "ВЫКЛ"], [0.5, "ТИХО"], [1, "НОРМА"], [1.5, "ГРОМКО"]];
-const SET_ROWS = [60, 108, 156]; // громкость, сигнал, вибрация
-const SET_MINUS = (y) => [300, y, 44, 36];
-const SET_PLUS = (y) => [556, y, 44, 36];
-const SET_TEST = [40, 204, 260, 34];
-const SET_TG = [320, 204, 280, 34];
 const TELEGRAM_URL = "https://t.me/melnikovdania";
-const SET_CAMERA = [40, 256, 270, 36];
-const SET_SUPPORT = [330, 256, 270, 36];
-const SET_BACK = [W / 2 - 90, 308, 180, 34];
+
+/** Раскладка настроек: альбомная (640×360) или вертикальная во весь экран телефона. */
+function settingsLayout(g) {
+  if (!g.portrait) {
+    const row = (y) => ({ label: [40, y + 12], minus: [300, y, 44, 36], plus: [556, y, 44, 36], bar: [352, y + 8, 196, 20] });
+    return {
+      title: 16, fs: { title: 24, label: 12, btn: 12, sign: 16 },
+      volume: row(60), alert: row(108), vibLabel: [40, 168], vib: [300, 156, 300, 36],
+      test: [40, 204, 260, 34], tg: [320, 204, 280, 34], camera: [40, 256, 270, 36], support: [330, 256, 270, 36],
+      back: [W / 2 - 90, 308, 180, 34],
+    };
+  }
+  const row = (y) => ({ label: [24, y], minus: [24, y + 36, 88, 72], plus: [W - 112, y + 36, 88, 72], bar: [128, y + 52, W - 256, 40] });
+  const btn = (i) => [24, 572 + i * 88, W - 48, 74];
+  return {
+    title: 36, fs: { title: 32, label: 24, btn: 24, sign: 32 },
+    volume: row(110), alert: row(250), vibLabel: [24, 392], vib: [24, 428, W - 48, 74],
+    test: btn(0), tg: btn(1), camera: btn(2), support: btn(3),
+    back: [W / 2 - 160, Math.max(btn(4)[1] + 16, g.H - 100), 320, 74],
+  };
+}
 
 class SettingsScene extends Scene {
+  get ownsPanel() {
+    return this.game.portrait;
+  }
   set(key, value) {
     const g = this.game;
     g.settings[key] = value;
@@ -1813,22 +1870,22 @@ class SettingsScene extends Scene {
     setAudio(g.settings);
   }
   handle() {
-    const g = this.game, st = g.settings;
+    const g = this.game, st = g.settings, L = settingsLayout(g);
     const step = (i, d) => ALERT_LEVELS[Math.max(0, Math.min(ALERT_LEVELS.length - 1, i + d))][0];
     const ai = Math.max(0, ALERT_LEVELS.findIndex(([v]) => v === st.alert));
-    if (g.tapped(SET_MINUS(SET_ROWS[0]))) { this.set("volume", Math.max(0, Math.round(st.volume * 10 - 1) / 10)); sfx.click(); }
-    if (g.tapped(SET_PLUS(SET_ROWS[0]))) { this.set("volume", Math.min(1, Math.round(st.volume * 10 + 1) / 10)); sfx.click(); }
-    if (g.tapped(SET_MINUS(SET_ROWS[1]))) { this.set("alert", step(ai, -1)); sfx.alert(); }
-    if (g.tapped(SET_PLUS(SET_ROWS[1]))) { this.set("alert", step(ai, 1)); sfx.alert(); }
-    if (g.tapped([300, SET_ROWS[2], 300, 36])) { this.set("vibrate", !st.vibrate); sfx.click(); }
-    if (g.tapped(SET_TEST)) sfx.alert();
-    if (g.tapped(SET_TG)) {
+    if (g.tapped(L.volume.minus)) { this.set("volume", Math.max(0, Math.round(st.volume * 10 - 1) / 10)); sfx.click(); }
+    if (g.tapped(L.volume.plus)) { this.set("volume", Math.min(1, Math.round(st.volume * 10 + 1) / 10)); sfx.click(); }
+    if (g.tapped(L.alert.minus)) { this.set("alert", step(ai, -1)); sfx.alert(); }
+    if (g.tapped(L.alert.plus)) { this.set("alert", step(ai, 1)); sfx.alert(); }
+    if (g.tapped(L.vib)) { this.set("vibrate", !st.vibrate); sfx.click(); }
+    if (g.tapped(L.test)) sfx.alert();
+    if (g.tapped(L.tg)) {
       sfx.click();
       window.open(TELEGRAM_URL, "_blank", "noopener"); // на телефоне откроется приложение Telegram
     }
-    if (g.tapped(SET_CAMERA)) return g.change(new CameraScene(g));
-    if (g.tapped(SET_SUPPORT)) return g.change(new SupportScene(g));
-    if (g.key("Escape") || g.tapped(SET_BACK)) g.change(new TitleScene(g));
+    if (g.tapped(L.camera)) return g.change(new CameraScene(g));
+    if (g.tapped(L.support)) return g.change(new SupportScene(g));
+    if (g.key("Escape") || g.tapped(L.back)) g.change(new TitleScene(g));
   }
   draw(c) {
     c.drawImage(IMG.arena_bg, 0, 0);
@@ -1836,39 +1893,53 @@ class SettingsScene extends Scene {
     c.fillRect(0, 0, CW, CH);
   }
   /** Строка-шкала: подпись, «−», деления, «+». */
-  slider(y, label, k, value) {
+  slider(row, fs, label, k, value) {
     const g = this.game;
-    g.text(label, 40, y + 12, 12);
-    g.button(SET_MINUS(y), "-", { size: 16 });
-    g.button(SET_PLUS(y), "+", { size: 16 });
-    const segs = 10, x0 = 352, w = 196, sw = w / segs;
+    g.text(label, row.label[0], row.label[1], fs.label);
+    g.button(row.minus, "-", { size: fs.sign });
+    g.button(row.plus, "+", { size: fs.sign });
+    const [x0, y, w, h] = row.bar, segs = 10, sw = w / segs;
     for (let i = 0; i < segs; i++) {
-      g.rect([x0 + i * sw + 1, y + 8, sw - 3, 20], i < Math.round(k * segs) ? COL.gold : "rgb(50,36,40)");
+      g.rect([x0 + i * sw + 1, y, sw - 3, h], i < Math.round(k * segs) ? COL.gold : "rgb(50,36,40)");
     }
-    const tw = value.length * 12 + 12; // подложка, чтобы значение читалось поверх делений
-    g.rect([x0 + w / 2 - tw / 2, y + 6, tw, 24], "rgba(10,6,14,0.92)");
-    g.text(value, x0 + w / 2, y + 12, 12, COL.gold, "center");
+    const tw = value.length * fs.label + fs.label; // подложка, чтобы значение читалось поверх делений
+    g.rect([x0 + w / 2 - tw / 2, y - 2, tw, h + 4], "rgba(10,6,14,0.92)");
+    g.text(value, x0 + w / 2, y + (h - fs.label) / 2, fs.label, COL.gold, "center");
   }
   drawUi() {
-    const g = this.game, st = g.settings;
-    g.text("НАСТРОЙКИ", W / 2, 16, 24, COL.gold, "center");
-    this.slider(SET_ROWS[0], "Громкость", st.volume, `${Math.round(st.volume * 100)}%`);
+    const g = this.game, st = g.settings, L = settingsLayout(g), fs = L.fs;
+    g.text("НАСТРОЙКИ", W / 2, L.title, fs.title, COL.gold, "center");
+    this.slider(L.volume, fs, "Громкость", st.volume, `${Math.round(st.volume * 100)}%`);
     const al = ALERT_LEVELS.find(([v]) => v === st.alert) || ALERT_LEVELS[2];
-    this.slider(SET_ROWS[1], "Сигнал «приседай»", st.alert / 1.5, al[1]);
-    g.text("Вибрация (Android)", 40, SET_ROWS[2] + 12, 12);
-    g.button([300, SET_ROWS[2], 300, 36], st.vibrate ? "ВКЛ" : "ВЫКЛ", { size: 12, selected: st.vibrate });
-    g.button(SET_TEST, "ПРОВЕРИТЬ СИГНАЛ", { size: 12 });
-    g.button(SET_TG, "Наш Telegram", { size: 12, color: "rgb(120,200,255)", border: "rgb(70,140,200)" });
-    g.button(SET_CAMERA, "Камера и советы", { size: 12 });
-    g.button(SET_SUPPORT, "Поддержать проект", { size: 12, color: "rgb(255,150,150)" });
-    g.button(SET_BACK, "НАЗАД", { size: 12 });
+    this.slider(L.alert, fs, "Сигнал «приседай»", st.alert / 1.5, al[1]);
+    g.text("Вибрация (Android)", L.vibLabel[0], L.vibLabel[1], fs.label);
+    g.button(L.vib, st.vibrate ? "ВКЛ" : "ВЫКЛ", { size: fs.btn, selected: st.vibrate });
+    g.button(L.test, "ПРОВЕРИТЬ СИГНАЛ", { size: fs.btn });
+    g.button(L.tg, "Наш Telegram", { size: fs.btn, color: "rgb(120,200,255)", border: "rgb(70,140,200)" });
+    g.button(L.camera, "Камера и советы", { size: fs.btn });
+    g.button(L.support, "Поддержать проект", { size: fs.btn, color: "rgb(255,150,150)" });
+    g.button(L.back, "НАЗАД", { size: fs.btn });
   }
 }
 
 // ------------------------------------------------------------------ Поддержать проект
-const TIP_RECTS = TIPS.map((_, i) => [40, 150 + i * 46, 560, 40]);
-const TIP_BACK = [W / 2 - 90, 314, 180, 32];
 const HEART = ["0110110", "1111111", "1111111", "0111110", "0011100", "0001000"];
+
+function supportLayout(g) {
+  if (!g.portrait) {
+    return {
+      title: [14, 24], heart: [48, 6], text: [98, 8, 70, 14], tips: TIPS.map((_, i) => [40, 150 + i * 46, 560, 40]),
+      fs: { name: 12, desc: 8, price: 12 }, msg: [292, 8], back: [W / 2 - 90, 314, 180, 32], backFs: 12,
+    };
+  }
+  const tips = TIPS.map((_, i) => [24, 372 + i * 128, W - 48, 114]);
+  const end = tips[tips.length - 1][1] + 114;
+  return {
+    title: [36, 32], heart: [104, 14], text: [222, 16, 36, 26], tips,
+    fs: { name: 24, desc: 16, price: 32 }, msg: [end + 28, 16],
+    back: [W / 2 - 160, Math.max(end + 80, g.H - 100), 320, 74], backFs: 24,
+  };
+}
 
 class SupportScene extends Scene {
   constructor(game) {
@@ -1876,9 +1947,12 @@ class SupportScene extends Scene {
     this.msgT = 0;
     this.busy = false;
   }
+  get ownsPanel() {
+    return this.game.portrait;
+  }
   handle() {
-    const g = this.game;
-    TIP_RECTS.forEach((r, i) => {
+    const g = this.game, L = supportLayout(g);
+    L.tips.forEach((r, i) => {
       if (!this.busy && g.tapped(r)) {
         this.busy = true;
         g.store.tip(TIPS[i]).then((ok) => {
@@ -1890,7 +1964,7 @@ class SupportScene extends Scene {
         });
       }
     });
-    if (g.key("Escape") || g.tapped(TIP_BACK)) g.change(new SettingsScene(g));
+    if (g.key("Escape") || g.tapped(L.back)) g.change(new SettingsScene(g));
   }
   update(dt) {
     this.msgT -= dt;
@@ -1902,26 +1976,29 @@ class SupportScene extends Scene {
     c.fillRect(0, 0, CW, CH);
   }
   drawUi() {
-    const g = this.game, t = g.time;
-    g.text("ПОДДЕРЖАТЬ ПРОЕКТ", W / 2, 14, 24, COL.gold, "center");
+    const g = this.game, t = g.time, L = supportLayout(g), fs = L.fs;
+    g.text("ПОДДЕРЖАТЬ ПРОЕКТ", W / 2, L.title[0], L.title[1], COL.gold, "center");
     // пиксельное сердце, бьётся сильнее после поддержки
-    const px = 6 + Math.round((Math.sin(t * 4) + 1) * 0.5 + (this.burst || 0) * 2);
-    const hx = W / 2 - 3.5 * px, hy = 48;
+    const base = L.heart[1];
+    const px = base + Math.round(((Math.sin(t * 4) + 1) * 0.5 + (this.burst || 0) * 2) * (base / 6));
+    const hx = W / 2 - 3.5 * px, hy = L.heart[0];
     HEART.forEach((row, y) => [...row].forEach((v, x) => {
       if (v === "1") g.rect([hx + x * px, hy + y * px, px, px], y < 2 && x > 0 && x < 3 ? "rgb(255,150,150)" : "rgb(200,40,50)");
     }));
     const text = "Игра бесплатна: без рекламы и без платной силы. Если Ash & Iron помогает вам тренироваться, поддержите разработку.";
-    g.wrap(text, 70).forEach((l, i) => g.text(l, W / 2, 98 + i * 14, 8, COL.text, "center"));
+    const [ty, tsize, twrap, tstep] = L.text;
+    g.wrap(text, twrap).forEach((l, i) => g.text(l, W / 2, ty + i * tstep, tsize, COL.text, "center"));
     TIPS.forEach((tip, i) => {
-      const r = TIP_RECTS[i];
+      const r = L.tips[i];
       g.button(r, "", { selected: i === 0 });
-      g.text(tip.name, r[0] + 16, r[1] + 8, 12, COL.gold);
-      g.text(tip.desc, r[0] + 16, r[1] + 26, 8, COL.dim);
-      g.text(tip.price, r[0] + r[2] - 16, r[1] + 14, 12, "rgb(120,220,255)", "right");
+      g.text(tip.name, r[0] + 16, r[1] + r[3] / 2 - fs.name - 2, fs.name, COL.gold);
+      g.text(tip.desc, r[0] + 16, r[1] + r[3] / 2 + 6, fs.desc, COL.dim);
+      g.text(tip.price, r[0] + r[2] - 16, r[1] + (r[3] - fs.price) / 2, fs.price, "rgb(120,220,255)", "right");
     });
-    if (this.msgT > 0) g.text("Спасибо, рыцарь! Костёр горит ярче.", W / 2, 292, 8, COL.gold, "center");
-    else if (g.store.tips > 0) g.text(`Вы поддержали проект: ${g.store.tips} раз. Спасибо!`, W / 2, 292, 8, "rgb(255,150,150)", "center");
-    g.button(TIP_BACK, "НАЗАД", { size: 12 });
+    const [my, msize] = L.msg;
+    if (this.msgT > 0) g.text("Спасибо, рыцарь! Костёр горит ярче.", W / 2, my, msize, COL.gold, "center");
+    else if (g.store.tips > 0) g.text(`Вы поддержали проект: ${g.store.tips} раз. Спасибо!`, W / 2, my, msize, "rgb(255,150,150)", "center");
+    g.button(L.back, "НАЗАД", { size: L.backFs });
   }
 }
 
