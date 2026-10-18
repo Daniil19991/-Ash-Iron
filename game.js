@@ -1269,6 +1269,13 @@ class BattleScene extends Scene {
 // ------------------------------------------------------------------ Кузница
 const SHOP_ROWS = [...SHOP_ORDER, "back"];
 const shopRect = (i) => [18, 48 + i * 40, 384, i === SHOP_ORDER.length ? 26 : 36];
+/** Телефон вертикально: список во весь экран под «чёлкой» с героем. */
+function shopRectTall(g, i) {
+  const top = GAME_H + 12, gap = 10, backH = 60, msgH = 40, n = SHOP_ORDER.length;
+  const h = Math.max(64, Math.min(120, Math.floor((g.H - top - 16 - backH - msgH - gap * n) / n)));
+  if (i === n) return [W / 2 - 160, top + n * (h + gap) + msgH, 320, backH];
+  return [16, top + i * (h + gap), W - 32, h];
+}
 
 /** Мечи за алые камни, уникальное снаряжение за синие (с боссов). */
 class ShopScene extends Scene {
@@ -1278,6 +1285,12 @@ class ShopScene extends Scene {
     this.embers = new Particles(300, 120, 10);
     this.previewEmbers = new Particles(548, 236, 16, 6); // искры пепельного клинка в превью
     this.say("Алые камни дают за каждого врага, синие за боссов.", 4);
+  }
+  get ownsPanel() {
+    return this.game.portrait;
+  }
+  rect(i) {
+    return this.game.portrait ? shopRectTall(this.game, i) : shopRect(i);
   }
   say(msg, t = 3) {
     this.message = msg;
@@ -1313,7 +1326,7 @@ class ShopScene extends Scene {
       this.choose(SHOP_ROWS[i]);
     };
     if (g.key("Enter", " ")) return activate(this.index);
-    SHOP_ROWS.forEach((_, i) => { if (g.tapped(shopRect(i))) activate(i); });
+    SHOP_ROWS.forEach((_, i) => { if (g.tapped(this.rect(i))) activate(i); });
   }
   update(dt) {
     this.embers.update(dt);
@@ -1327,7 +1340,56 @@ class ShopScene extends Scene {
     c.drawImage(anim("bonfire", this.game.time, 8, 4), 292, GROUND_ARENA - 22); // горн
     this.embers.draw(c);
   }
+  /** Статус вещи в кузнице: [текст, цвет]. */
+  status(key) {
+    const p = this.game.player, it = item(key);
+    if (p.owned.includes(key)) {
+      if (p.sword === key) return ["НАДЕТ", COL.gold];
+      return SWORDS[key] ? ["ВЗЯТЬ", COL.text] : ["ЕСТЬ", COL.gold];
+    }
+    let scol = it.price[1] ? "rgb(130,170,255)" : "rgb(240,110,110)";
+    if (!p.canAfford(key)) scol = it.price[1] ? "rgb(65,85,128)" : "rgb(120,55,55)";
+    return [priceText(key), scol];
+  }
+  /** Герой в выбранном снаряжении; на непокупленной вещи — примерка. */
+  drawHero(x, ground, scale) {
+    const g = this.game, p = g.player, key = SHOP_ROWS[this.index];
+    const sword = SWORDS[key] ? key : p.sword;
+    const owned = RELICS[key] ? [...p.owned, key] : p.owned;
+    const hero = anim(`${heroSprite(sword, owned)}_idle`, g.time, 1.5, 2);
+    g.ctx.drawImage(hero, x, ground - hero.height * scale, hero.width * scale, hero.height * scale);
+    if (key !== "back" && !p.owned.includes(key)) {
+      g.text("ПРИМЕРКА", x + (hero.width * scale) / 2, ground - hero.height * scale - 20, g.portrait ? 16 : 8, "rgb(120,220,255)", "center");
+    }
+    return sword;
+  }
+  drawTall() {
+    const g = this.game, p = g.player, w = p.weapon;
+    // «чёлка»: заголовок, оружие и крупный герой у горна
+    g.text("КУЗНИЦА", 18, 16, 24, COL.gold);
+    g.gems(W - 18, 18, p, "right");
+    g.text(w.name, 18, 52, 16, COL.text);
+    g.text(`урон ${p.damage}  крит x${w.crit}  удар ${w.cost} сил`, 18, 76, 12, COL.dim);
+    const relics = Object.keys(RELICS).filter((k) => p.owned.includes(k)).map((k) => RELICS[k].name);
+    relics.forEach((name, i) => g.text(name, 18, 96 + i * 16, 12, "rgb(150,190,255)"));
+    Object.assign(this.previewEmbers, { x: W / 2 + 157, y: 2 * GROUND_ARENA - 42, spread: 9 });
+    if (this.drawHero(W / 2 + 40, 2 * GROUND_ARENA + 24, 6) === "ash") this.previewEmbers.draw(g.ctx);
+    SHOP_ROWS.forEach((key, i) => {
+      const r = this.rect(i), sel = this.index === i;
+      if (key === "back") return g.button(r, "НАЗАД К КОСТРУ", { selected: sel, size: 16 });
+      const it = item(key), [status, scol] = this.status(key);
+      g.button(r, "", { selected: sel });
+      g.text(it.name, r[0] + 14, r[1] + r[3] / 2 - 26, 24, it.unique ? "rgb(150,190,255)" : sel ? COL.gold : COL.text);
+      g.text(it.desc, r[0] + 14, r[1] + r[3] / 2 + 8, 12, COL.dim);
+      g.text(status, r[0] + r[2] - 14, r[1] + r[3] / 2 + 6, 16, scol, "right");
+    });
+    if (this.msgT > 0) {
+      const b = this.rect(SHOP_ROWS.length - 1);
+      g.text(this.message, W / 2, b[1] - 30, this.message.length * 12 <= W - 32 ? 12 : 8, COL.gold, "center");
+    }
+  }
   drawUi() {
+    if (this.game.portrait) return this.drawTall();
     const g = this.game, p = g.player;
     g.rect([10, 10, 400, 340], "rgba(10,6,14,0.85)");
     g.ctx.strokeStyle = "rgb(90,64,50)";
@@ -1337,29 +1399,14 @@ class ShopScene extends Scene {
     SHOP_ROWS.forEach((key, i) => {
       const r = shopRect(i), sel = this.index === i;
       if (key === "back") return g.button(r, "НАЗАД К КОСТРУ", { selected: sel });
-      const it = item(key);
-      let status, scol;
-      if (p.owned.includes(key)) {
-        if (p.sword === key) [status, scol] = ["НАДЕТ", COL.gold];
-        else [status, scol] = SWORDS[key] ? ["ВЗЯТЬ", COL.text] : ["ЕСТЬ", COL.gold];
-      } else {
-        status = priceText(key);
-        scol = it.price[1] ? "rgb(130,170,255)" : "rgb(240,110,110)";
-        if (!p.canAfford(key)) scol = it.price[1] ? "rgb(65,85,128)" : "rgb(120,55,55)";
-      }
+      const it = item(key), [status, scol] = this.status(key);
       g.button(r, "", { selected: sel });
       g.text(it.name, r[0] + 8, r[1] + 7, 8, it.unique ? "rgb(150,190,255)" : sel ? COL.gold : COL.text);
       g.text(it.desc, r[0] + 8, r[1] + 21, 8, COL.dim);
       g.text(status, r[0] + r[2] - 8, r[1] + 14, 8, scol, "right");
     });
     // крупное превью героя; на непокупленной вещи — примерка
-    const key = SHOP_ROWS[this.index];
-    const sword = SWORDS[key] ? key : p.sword;
-    const owned = RELICS[key] ? [...p.owned, key] : p.owned;
-    const hero = anim(`${heroSprite(sword, owned)}_idle`, g.time, 1.5, 2);
-    g.ctx.drawImage(hero, 470, 2 * GROUND_ARENA - 128, 96, 128);
-    if (key !== "back" && !p.owned.includes(key)) g.text("ПРИМЕРКА", 518, 2 * GROUND_ARENA - 144, 8, "rgb(120,220,255)", "center");
-    if (sword === "ash") this.previewEmbers.draw(g.ctx);
+    if (this.drawHero(470, 2 * GROUND_ARENA, 4) === "ash") this.previewEmbers.draw(g.ctx);
     const w = p.weapon;
     g.text(w.name, W - 12, 20, 8, COL.text, "right");
     g.text(`урон ${p.damage} крит x${w.crit}`, W - 12, 34, 8, COL.dim, "right");
@@ -1389,6 +1436,28 @@ const COS_PREVIEW = [340, 40, 288, 200];
 const COS_ACTION = [340, 322, 288, 26];
 const COS_RESTORE = [12, 322, 186, 26];
 const COS_BACK = [206, 322, 124, 26];
+const COS_WIDE = { rows: COS_LAYOUT, preview: COS_PREVIEW, action: COS_ACTION, restore: COS_RESTORE, back: COS_BACK };
+
+/** Телефон вертикально: превью с героем в «чёлке», список и кнопки во весь экран. */
+function cosLayoutTall(g) {
+  const preview = [84, 10, 472, 328]; // пропорции сцены превью 144×100
+  const bottom = g.H - 12;
+  const back = [W - 216, bottom - 52, 200, 52], restore = [16, bottom - 52, W - 248, 52];
+  const action = [16, bottom - 52 - 12 - 60, W - 32, 60];
+  const top = GAME_H + 70, headH = 26, gap = 8, n = COS_ITEMS.length;
+  const h = Math.max(46, Math.min(84, Math.floor((action[1] - 16 - top - 3 * headH - gap * n) / n)));
+  const rows = [];
+  let y = top;
+  for (const kind of ["sword", "hit", "victory"]) {
+    rows.push({ head: KIND_TITLES[kind], y });
+    y += headH;
+    for (const item of COSMETICS.filter((c) => c.kind === kind)) {
+      rows.push({ item, rect: [16, y, W - 32, h] });
+      y += h + gap;
+    }
+  }
+  return { rows, preview, action, restore, back, tall: true };
+}
 
 /** Витрина: живое превью меча, удара по манекену и оформления победы; покупка и «надеть». */
 class CosmeticsScene extends Scene {
@@ -1411,6 +1480,12 @@ class CosmeticsScene extends Scene {
   }
   get item() {
     return COS_ITEMS[this.index].item;
+  }
+  get ownsPanel() {
+    return this.game.portrait;
+  }
+  layout() {
+    return this.game.portrait ? cosLayoutTall(this.game) : COS_WIDE;
   }
   say(msg, t = 3) {
     this.message = msg;
@@ -1450,13 +1525,13 @@ class CosmeticsScene extends Scene {
     this.say(ids.length ? `Покупки восстановлены: ${ids.length}` : "Покупок пока нет");
   }
   handle() {
-    const g = this.game, n = COS_ITEMS.length;
-    if (g.key("Escape") || g.tapped(COS_BACK)) return g.change(new TitleScene(g));
+    const g = this.game, n = COS_ITEMS.length, L = this.layout();
+    if (g.key("Escape") || g.tapped(L.back)) return g.change(new TitleScene(g));
     if (g.key("ArrowUp")) this.select((this.index + n - 1) % n);
     if (g.key("ArrowDown")) this.select((this.index + 1) % n);
-    if (g.key("Enter", " ") || g.tapped(COS_ACTION)) return this.action();
-    if (g.tapped(COS_RESTORE)) return this.restore();
-    COS_ITEMS.forEach((r, i) => { if (g.tapped(r.rect)) this.select(i); });
+    if (g.key("Enter", " ") || g.tapped(L.action)) return this.action();
+    if (g.tapped(L.restore)) return this.restore();
+    L.rows.filter((r) => r.item).forEach((r, i) => { if (g.tapped(r.rect)) this.select(i); });
   }
   update(dt) {
     this.msgT -= dt;
@@ -1500,7 +1575,7 @@ class CosmeticsScene extends Scene {
     this.aura.draw(c, skin, pose, hx, 48, t);
     if (this.slashT > 0) drawSlash(c, hx + 34, 61, p.sword, 1 - this.slashT / SLASH_TIME, skin);
     this.hitFx.draw(c);
-    const [x, y, w, h] = COS_PREVIEW;
+    const [x, y, w, h] = this.layout().preview;
     g.ctx.drawImage(this.pc, x, y, w, h);
     if (this.victory) {
       const vc = this.vc.getContext("2d");
@@ -1514,7 +1589,38 @@ class CosmeticsScene extends Scene {
     g.ctx.strokeStyle = COL.gold;
     g.ctx.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
   }
+  drawTall() {
+    const g = this.game, it = this.item, owned = g.store.owns(it.id), L = this.layout();
+    this.drawPreview();
+    const [px, py, pw] = L.preview;
+    g.rect([px, py, pw, 30], "rgba(10,6,14,0.75)");
+    g.text("ЛАВКА ОБРАЗОВ", px + 10, py + 7, 16, COL.gold);
+    g.text("ТЕСТ: без оплаты", px + pw - 10, py + 11, 8, "rgb(120,220,255)", "right");
+    // выбранная вещь — под «чёлкой» с превью
+    g.text(it.name, 16, GAME_H + 8, 24, `rgb(${it.color.join(",")})`);
+    g.text(this.msgT > 0 ? this.message : `${it.desc} · только облик`, 16, GAME_H + 40, 12, this.msgT > 0 ? COL.gold : COL.dim);
+    for (const row of L.rows) {
+      if (row.head) {
+        g.text(row.head, 18, row.y + 6, 12, COL.dim);
+        continue;
+      }
+      const ci = COS_ITEMS.findIndex((r) => r.item === row.item), sel = ci === this.index, r = row.rect, c = row.item;
+      g.button(r, "", { selected: sel });
+      g.rect([r[0] + 8, r[1] + 8, 8, r[3] - 16], `rgb(${c.color.join(",")})`);
+      g.text(c.name, r[0] + 28, r[1] + r[3] / 2 - 20, 16, sel ? COL.gold : COL.text);
+      g.text(c.desc, r[0] + 28, r[1] + r[3] / 2 + 4, 12, COL.dim);
+      const on = g.profile.style[c.kind] === c.id && g.store.owns(c.id);
+      const status = on ? "НАДЕТО" : g.store.owns(c.id) ? "ЕСТЬ" : g.store.price(c.id);
+      g.text(status, r[0] + r[2] - 14, r[1] + r[3] / 2 - 8, 16, on ? COL.gold : g.store.owns(c.id) ? COL.text : "rgb(120,220,255)", "right");
+    }
+    const on = g.profile.style[it.kind] === it.id && owned;
+    const label = !owned ? `КУПИТЬ ЗА ${g.store.price(it.id)}` : on ? "СНЯТЬ" : "НАДЕТЬ";
+    g.button(L.action, label, { selected: true, size: 24, color: owned ? COL.gold : "rgb(120,220,255)" });
+    g.button(L.restore, "ВОССТАНОВИТЬ ПОКУПКИ", { size: 16 });
+    g.button(L.back, "НАЗАД", { size: 16 });
+  }
   drawUi() {
+    if (this.game.portrait) return this.drawTall();
     const g = this.game, it = this.item, owned = g.store.owns(it.id);
     g.text("ЛАВКА ОБРАЗОВ", 14, 14, 16, COL.gold);
     g.text("ТЕСТ: оплата не списывается", W - 12, 18, 8, "rgb(120,220,255)", "right");
@@ -1693,6 +1799,8 @@ const SET_ROWS = [60, 108, 156]; // громкость, сигнал, вибра
 const SET_MINUS = (y) => [300, y, 44, 36];
 const SET_PLUS = (y) => [556, y, 44, 36];
 const SET_TEST = [40, 204, 260, 34];
+const SET_TG = [320, 204, 280, 34];
+const TELEGRAM_URL = "https://t.me/melnikovdania";
 const SET_CAMERA = [40, 256, 270, 36];
 const SET_SUPPORT = [330, 256, 270, 36];
 const SET_BACK = [W / 2 - 90, 308, 180, 34];
@@ -1714,6 +1822,10 @@ class SettingsScene extends Scene {
     if (g.tapped(SET_PLUS(SET_ROWS[1]))) { this.set("alert", step(ai, 1)); sfx.alert(); }
     if (g.tapped([300, SET_ROWS[2], 300, 36])) { this.set("vibrate", !st.vibrate); sfx.click(); }
     if (g.tapped(SET_TEST)) sfx.alert();
+    if (g.tapped(SET_TG)) {
+      sfx.click();
+      window.open(TELEGRAM_URL, "_blank", "noopener"); // на телефоне откроется приложение Telegram
+    }
     if (g.tapped(SET_CAMERA)) return g.change(new CameraScene(g));
     if (g.tapped(SET_SUPPORT)) return g.change(new SupportScene(g));
     if (g.key("Escape") || g.tapped(SET_BACK)) g.change(new TitleScene(g));
@@ -1746,7 +1858,7 @@ class SettingsScene extends Scene {
     g.text("Вибрация (Android)", 40, SET_ROWS[2] + 12, 12);
     g.button([300, SET_ROWS[2], 300, 36], st.vibrate ? "ВКЛ" : "ВЫКЛ", { size: 12, selected: st.vibrate });
     g.button(SET_TEST, "ПРОВЕРИТЬ СИГНАЛ", { size: 12 });
-    g.text("Сигнал звучит, когда враг замахнулся", 316, SET_TEST[1] + 13, 8, COL.dim);
+    g.button(SET_TG, "Наш Telegram", { size: 12, color: "rgb(120,200,255)", border: "rgb(70,140,200)" });
     g.button(SET_CAMERA, "Камера и советы", { size: 12 });
     g.button(SET_SUPPORT, "Поддержать проект", { size: 12, color: "rgb(255,150,150)" });
     g.button(SET_BACK, "НАЗАД", { size: 12 });
