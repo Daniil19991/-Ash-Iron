@@ -232,10 +232,10 @@ class Game {
     this.rect([x, y, Math.floor(w * frac), 1], "rgba(255,255,255,0.3)");
   }
 
-  button(r, label, { selected = false, size = 8, color } = {}) {
-    this.rect(r, selected ? "rgba(70,40,30,0.85)" : "rgba(12,8,16,0.75)");
+  button(r, label, { selected = false, size = 8, color, fill, border } = {}) {
+    this.rect(r, fill || (selected ? "rgba(70,40,30,0.85)" : "rgba(12,8,16,0.75)"));
     const c = this.ctx;
-    c.strokeStyle = selected ? COL.gold : "rgb(90,64,50)";
+    c.strokeStyle = border || (selected ? COL.gold : "rgb(90,64,50)");
     c.lineWidth = 1;
     c.strokeRect(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1);
     this.text(label, r[0] + r[2] / 2, r[1] + (r[3] - size) / 2, size, color || (selected ? COL.gold : COL.text), "center");
@@ -341,20 +341,21 @@ class Game {
     this.ctx.strokeStyle = "rgb(60,46,50)";
     this.ctx.strokeRect(x - 1.5, y - 1.5, w + 3, h + 3);
     const big = this.portrait;
+    const inset = (big && this.scene.camInset) || 0; // сцена рисует поверх камеры свою «чёлку»
     if (this.motion.drawPreview(this.ctx, x, y, w, h)) {
       const d = this.motion.detector;
       this.text(d.posture, x + 4, y + h - (big ? 20 : 12), big ? 16 : 8, COL.gold);
-      if (big) {
+      if (big && !inset) {
         const c = d.counts;
         this.text(`Отжим ${c.pushup}  Присед ${c.squat}  Звезда ${c.jack}`, x + 4, y + 4, 8, COL.text);
       }
     } else {
-      this.text("КАМЕРА", x + w / 2, y + 8, big ? 16 : 8, COL.dim, "center");
+      this.text("КАМЕРА", x + w / 2, y + inset + 8, big ? 16 : 8, COL.dim, "center");
       const lines = this.wrap(this.motion.status, big ? 36 : 14);
-      lines.forEach((l, i) => this.text(l, x + w / 2, y + (big ? 40 : 24) + i * 12, 8, COL.dim, "center"));
+      lines.forEach((l, i) => this.text(l, x + w / 2, y + inset + (big ? 40 : 24) + i * 12, 8, COL.dim, "center"));
       if (big) {
         this.wrap("Поставьте телефон на пол у стены, отойдите на 2–3 м, чтобы тело было целиком в кадре.", 36)
-          .forEach((l, i) => this.text(l, x + w / 2, y + 100 + i * 12, 8, COL.dim, "center"));
+          .forEach((l, i) => this.text(l, x + w / 2, y + inset + 100 + i * 12, 8, COL.dim, "center"));
       }
     }
   }
@@ -418,6 +419,7 @@ class Game {
     if (this.portrait && this.scene.needsCamera) {
       this.cameraWidget();
       if (this.scene.manual) this.manualButtons();
+      if (this.scene.drawOverlay) this.scene.drawOverlay(); // кнопки и подписи поверх камеры
     }
     if (this.toastT > 0) {
       this.toastT -= dt;
@@ -548,6 +550,8 @@ class TitleScene extends Scene {
 
 // ------------------------------------------------------------------ Костёр
 const BONFIRE_BUTTONS = [[[20, 216, 92, 26], "В БОЙ"], [[118, 216, 96, 26], "КУЗНИЦА"], [[220, 216, 90, 26], "МЕНЮ"]];
+const GO_STYLE = { fill: "rgba(24,70,30,0.92)", border: "rgb(110,220,110)", color: "rgb(150,250,150)" }; // «В БОЙ»
+const RITUAL_TAB_H = 92; // «чёлка» с повторениями поверх окна камеры
 
 class BonfireScene extends Scene {
   constructor(game) {
@@ -564,10 +568,29 @@ class BonfireScene extends Scene {
     this.msgT = t;
   }
   get needsCamera() {
-    return !!this.ritual; // камера только во время ритуала прокачки
+    // на телефоне вертикально костёр — место прокачки: камера внизу, кнопки под ней;
+    // в альбомной ориентации окошко камеры появляется только на время ритуала
+    return this.game.portrait || !!this.ritual;
   }
+  get camInset() {
+    return this.ritual ? RITUAL_TAB_H : 0;
+  }
+  /** В портрете — крупные панели навыков, кнопки переезжают под камеру. */
   statRows() {
+    if (this.game.portrait) return Object.keys(STATS).map((st, i) => [st, [16, 66 + i * 98, 400, 90]]);
     return Object.keys(STATS).map((st, i) => [st, [20, 92 + i * 40, 290, 36]]);
+  }
+  /** «В БОЙ», «КУЗНИЦА», «МЕНЮ»: в портрете — на месте кнопок упражнений под камерой. */
+  navButtons() {
+    const g = this.game;
+    if (!g.portrait) return BONFIRE_BUTTONS;
+    return g.manual.map(([, r], j) => [r, BONFIRE_BUTTONS[j][1]]);
+  }
+  cancelRect() {
+    const g = this.game;
+    if (!g.portrait) return [W / 2 - 70, GAME_H - 26, 140, 22];
+    const [x, y, w, h] = g.cam;
+    return [x + w / 2 - 120, y + h - 62, 240, 50];
   }
   startRitual(stat) {
     const p = this.game.player;
@@ -577,7 +600,7 @@ class BonfireScene extends Scene {
   handle(moves) {
     const g = this.game, p = g.player;
     if (this.ritual) {
-      if (g.key("Escape") || g.tapped([W / 2 - 70, GAME_H - 26, 140, 22])) {
+      if (g.key("Escape") || g.tapped(this.cancelRect())) {
         this.ritual = null;
         return this.say("Ритуал прерван. Пепел не потрачен.");
       }
@@ -615,9 +638,10 @@ class BonfireScene extends Scene {
     if (g.key("Enter", " ")) return activate(this.index);
     if (g.key("Escape")) return g.change(new TitleScene(g));
     rows.forEach(([, r], i) => { if (g.tapped(r)) activate(i); });
-    BONFIRE_BUTTONS.forEach(([r], j) => { if (g.tapped(r)) activate(rows.length + j); });
+    this.navButtons().forEach(([r], j) => { if (g.tapped(r)) activate(rows.length + j); });
   }
   update(dt) {
+    this.manual = !!this.ritual; // кнопки ОТЖИМ/ПРИСЕД/ЗВЕЗДА нужны только в ритуале
     this.embers.update(dt);
     this.embers.rate += (26 - this.embers.rate) * Math.min(1, dt * 1.5);
     this.msgT -= dt;
@@ -632,6 +656,7 @@ class BonfireScene extends Scene {
     c.beginPath();
     c.ellipse(216, GROUND_TITLE - 4, r, 12, 0, 0, Math.PI * 2);
     c.fill();
+    if (this.game.portrait) return; // на телефоне вертикально костёр и рыцарь рисуются крупно рядом с панелями
     c.drawImage(anim("bonfire", t, 8, 4), 200, GROUND_TITLE - 44, 32, 44);
     const p = this.game.player, hs = heroSprite(p.sword, p.owned, this.game.skin);
     const hero = this.ritual && this.ritual.done % 2 ? IMG[`${hs}_attack_0`] : IMG[`${hs}_idle_0`];
@@ -639,6 +664,7 @@ class BonfireScene extends Scene {
     this.embers.draw(c);
   }
   drawUi() {
+    if (this.game.portrait) return this.drawPortrait();
     const g = this.game, p = g.player;
     g.rect([12, 12, 306, 260], "rgba(10,6,14,0.8)");
     g.ctx.strokeStyle = "rgb(90,64,50)";
@@ -655,7 +681,7 @@ class BonfireScene extends Scene {
       g.text(`${name} ${p[st]}`, r[0] + 8, r[1] + 7, 8, this.index === i ? COL.gold : COL.text);
       g.text(`${NAMES[ex]} x${p.repsNeeded(st)}: ${desc}`, r[0] + 8, r[1] + 21, 8, COL.dim);
     });
-    BONFIRE_BUTTONS.forEach(([r, label], j) => g.button(r, label, { selected: this.index === 3 + j }));
+    BONFIRE_BUTTONS.forEach(([r, label], j) => g.button(r, label, { selected: this.index === 3 + j, ...(j === 0 ? GO_STYLE : {}) }));
     g.text(`Урон ${p.damage}  Здоровье ${p.maxHp}  Силы ${p.maxStamina}`, 22, 248, 8, COL.dim);
     const tr = p.totalReps;
     g.text(`Всего: отжим ${tr.pushup} присед ${tr.squat} звезда ${tr.jack}`, 22, 260, 8, COL.text);
@@ -673,6 +699,67 @@ class BonfireScene extends Scene {
       g.button([W / 2 - 70, GAME_H - 26, 140, 22], "ПРЕРВАТЬ");
     } else if (this.msgT > 0) {
       g.wrap(this.message, 76).forEach((l, i) => g.text(l, W / 2, GAME_H - 36 + i * 12, 8, COL.gold, "center"));
+    }
+  }
+
+  /** Телефон вертикально: панель навыков сверху, камера с «чёлкой» ритуала и кнопки внизу. */
+  drawPortrait() {
+    const g = this.game, p = g.player;
+    g.rect([8, 8, W - 16, GAME_H - 12], "rgba(10,6,14,0.6)"); // костёр просвечивает сквозь панель
+    g.text("КОСТЁР", 18, 14, 24, COL.gold);
+    g.text(`Ур. ${p.level}  Пепел: ${p.souls}`, 18, 44, 12, COL.gold);
+    g.gems(W - 18, 14, p, "right");
+    g.text(`Урон ${p.damage}  Здоровье ${p.maxHp}  Силы ${p.maxStamina}`, W - 18, 32, 8, COL.dim, "right");
+    g.text(`Цена уровня: ${p.levelCost()} пепла`, W - 18, 48, 8, COL.dim, "right");
+    this.statRows().forEach(([st, r], i) => {
+      const [name, ex, desc] = STATS[st];
+      const active = this.ritual ? this.ritual.stat === st : this.index === i;
+      g.button(r, "", { selected: active, fill: active ? "rgba(70,40,30,0.85)" : "rgba(12,8,16,0.8)" });
+      g.text(`${name} ${p[st]}`, r[0] + 14, r[1] + 10, 24, active ? COL.gold : COL.text);
+      g.text(`${NAMES[ex]} x${p.repsNeeded(st)}`, r[0] + 14, r[1] + 42, 16, COL.text);
+      g.text(desc, r[0] + 14, r[1] + 66, 12, COL.dim);
+    });
+    this.drawCamp(g.ctx, 424, 326);
+  }
+
+  /** Рыцарь у костра справа от панелей (крупно, ×3), во время ритуала «тренируется». */
+  drawCamp(c, x, ground) {
+    const g = this.game, t = g.time, p = g.player;
+    const r = 92 + Math.round(Math.sin(t * 5) * 6);
+    c.fillStyle = "rgba(255,120,40,0.22)";
+    c.beginPath();
+    c.ellipse(x + 130, ground - 4, r, 18, 0, 0, Math.PI * 2);
+    c.fill();
+    c.imageSmoothingEnabled = false;
+    const hs = heroSprite(p.sword, p.owned, g.skin);
+    const hero = this.ritual && this.ritual.done % 2 ? IMG[`${hs}_attack_0`] : IMG[`${hs}_idle_0`];
+    c.drawImage(hero, x + 12, ground - hero.height * 3, hero.width * 3, hero.height * 3);
+    const fire = anim("bonfire", t, 8, 4);
+    c.drawImage(fire, x + 112, ground - fire.height * 3, fire.width * 3, fire.height * 3);
+  }
+
+  drawOverlay() {
+    const g = this.game;
+    const [x, y, w] = g.cam;
+    if (this.msgT > 0 && !this.ritual) { // сообщение костра — плашкой у верхнего края камеры
+      const lines = g.wrap(this.message, 34);
+      g.rect([x + 20, y, w - 40, 16 + lines.length * 22], "rgba(10,6,14,0.88)");
+      lines.forEach((l, i) => g.text(l, x + w / 2, y + 10 + i * 22, 16, COL.gold, "center"));
+    }
+    if (this.ritual) {
+      // «чёлка» поверх верхнего края окна камеры: сколько повторений осталось
+      const { stat, ex, need, done } = this.ritual;
+      const tw = Math.min(w - 40, 460), tx = x + (w - tw) / 2;
+      g.rect([tx, y, tw, RITUAL_TAB_H], "rgba(10,6,14,0.88)");
+      g.ctx.strokeStyle = COL.gold;
+      g.ctx.strokeRect(tx + 0.5, y + 0.5, tw - 1, RITUAL_TAB_H - 1);
+      g.text(`Ритуал: ${STATS[stat][0]}`, x + w / 2, y + 8, 12, COL.dim, "center");
+      g.text(`${NAMES[ex]}: ${done} / ${need}`, x + w / 2, y + 28, 24, COL.gold, "center");
+      g.bar(tx + 24, y + 64, tw - 48, 12, done / need, "rgb(230,140,50)");
+      g.button(this.cancelRect(), "ПРЕРВАТЬ", { size: 16 });
+    } else {
+      this.navButtons().forEach(([r, label], j) =>
+        g.button(r, label, { size: 16, selected: this.index === 3 + j, ...(j === 0 ? GO_STYLE : {}) }));
     }
   }
 }
