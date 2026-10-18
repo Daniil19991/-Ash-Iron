@@ -5,6 +5,14 @@ import { STORE } from "./config.js";
 import { loadJSON, saveJSON } from "./storage.js";
 
 const OWNED_KEY = "ash-and-iron-purchases";
+const TIPS_KEY = "ash-and-iron-tips";
+
+/** Поддержка проекта: расходуемые покупки без игровой выгоды (в App Store — consumable). */
+export const TIPS = [
+  { id: "support_ale", name: "Кружка эля", price: "1 $", desc: "на кофе разработчику" },
+  { id: "support_torch", name: "Факел для костра", price: "3 $", desc: "на новые локации и врагов" },
+  { id: "support_forge", name: "Меч в кузню", price: "5 $", desc: "на большое обновление" },
+];
 
 export const productId = (id) => `${STORE.bundleId}.${id}`;
 
@@ -14,6 +22,7 @@ export class Store {
     this.confirm = confirm;
     this.mode = "test";
     this.owned = new Set(loadJSON(OWNED_KEY, []));
+    this.tips = loadJSON(TIPS_KEY, 0); // сколько раз игрок поддержал проект
   }
 
   owns(id) {
@@ -39,6 +48,21 @@ export class Store {
       ok: `КУПИТЬ ${this.price()}`,
     });
     if (ok) this.grant(item.id);
+    return ok;
+  }
+
+  /** Поддержать проект. true — платёж прошёл. */
+  async tip(t) {
+    const ok = await this.confirm({
+      title: "ТЕСТОВАЯ ПОДДЕРЖКА",
+      text: `«${t.name}» за ${t.price}`,
+      note: "Тестовый режим: деньги не списываются. В версии для App Store платёж пройдёт через Apple.",
+      ok: `ПОДДЕРЖАТЬ ${t.price}`,
+    });
+    if (ok) {
+      this.tips += 1;
+      saveJSON(TIPS_KEY, this.tips);
+    }
     return ok;
   }
 

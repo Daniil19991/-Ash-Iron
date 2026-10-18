@@ -12,7 +12,7 @@ export const SWORDS = {
 // Реликвии работают сразу после покупки
 export const RELICS = {
   armor: { name: "Доспех Костяного Рыцаря", desc: "получаемый урон -25%", price: [0, 1], unique: true },
-  amulet: { name: "Амулет Углей", desc: "+1 фляга эстуса", price: [0, 2], unique: true },
+  amulet: { name: "Амулет Углей", desc: "+1 зелье лечения", price: [0, 2], unique: true },
 };
 
 export const SHOP_ORDER = ["rusty", "steel", "great", "ash", "armor", "amulet"];

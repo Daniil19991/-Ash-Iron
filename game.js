@@ -7,11 +7,12 @@ import {
   BOSS_EVERY, CASTLE_FROM_WAVE, LOCATIONS, RELICS, SHOP_ORDER, SWORDS, enemyKind, isBossWave, item, locationFor, priceText, rewards,
 } from "./gear.js";
 import { Player, STATS } from "./player.js";
-import { initAudio, sfx } from "./sfx.js";
+import { initAudio, setAudio, sfx } from "./sfx.js";
 import { COSMETIC, COSMETICS, HitFx, KIND_TITLES, SwordAura, VictoryFx, drawSkinSlash } from "./cosmetics.js";
 import { Leaderboard } from "./leaderboard.js";
 import { Profile } from "./profile.js";
-import { Store } from "./store.js";
+import { Store, TIPS } from "./store.js";
+import { loadJSON, saveJSON } from "./storage.js";
 import { confirmDialog, modalOpen, promptName } from "./ui.js";
 
 const CW = 320, CH = 180;
@@ -128,6 +129,8 @@ class Game {
     this.profile = Profile.load(); // имя в рейтинге, рекорд и облик — переживают «Новую игру»
     this.store = new Store(confirmDialog);
     this.leaderboard = new Leaderboard();
+    this.settings = { volume: 0.8, alert: 1, vibrate: true, ...loadJSON(SETTINGS_KEY, {}) };
+    setAudio(this.settings);
     this.leaderboard.flush(); // результат, накопленный без сети, уходит при запуске
     this.motion = new Motion();
     this.useCamera = useCamera;
@@ -136,7 +139,7 @@ class Game {
     this.keys = [];
     this.taps = [];
     this.manualCounts = { pushup: 0, squat: 0, jack: 0 };
-    this.run = null; // здоровье/эстус между боями (null — полные, после костра)
+    this.run = null; // здоровье/зелья между боями (null — полные, после костра)
     this.resize();
     addEventListener("resize", () => this.resize());
     this.codes = []; // физические клавиши (e.code) — J/K/L работают на любой раскладке
@@ -160,10 +163,18 @@ class Game {
     });
   }
 
+  /** Нужна ли сцене нижняя часть экрана в портрете (камера или крупное меню). */
+  get usesPanel() {
+    const s = this.scene;
+    return !!s && (s.needsCamera || s.ownsPanel);
+  }
+
   resize() {
     const vw = innerWidth, vh = innerHeight;
     this.portrait = vh > vw * 1.05;
-    this.H = this.portrait ? Math.min(1400, Math.max(GAME_H + 200, Math.round((W * vh) / vw))) : GAME_H;
+    // камера видна только там, где нужны упражнения; иначе экран — одна картинка игры
+    this.panelOn = this.portrait && this.usesPanel;
+    this.H = this.panelOn ? Math.min(1400, Math.max(GAME_H + 200, Math.round((W * vh) / vw))) : GAME_H;
     this.canvas.width = W;
     this.canvas.height = this.H;
     const scale = Math.min(vw / W, vh / this.H);
@@ -362,6 +373,7 @@ class Game {
   }
 
   frame(dt) {
+    if (this.portrait && this.usesPanel !== this.panelOn) this.resize();
     let moves = this.motion.poll();
     // клавиатура (браузер на ПК) и экранные кнопки
     const pushup = ["pushup"], squat = ["squat_down", "squat"], jack = ["jack"];
@@ -374,7 +386,7 @@ class Game {
     this.testKeys();
     if (this.portrait || !this.motion.ok) {
       for (const [ex, r] of this.manual) {
-        if (this.scene.manual && this.tapped(r)) {
+        if (this.scene.manual && this.scene.needsCamera && this.tapped(r)) {
           moves.push(...(ex === "squat" ? ["squat_down", "squat"] : [ex]));
           this.manualCounts[ex] += 1;
         }
@@ -403,7 +415,7 @@ class Game {
     }
     c.drawImage(this.world, ox, oy, W, GAME_H);
     this.scene.drawUi();
-    if (this.portrait && !this.scene.ownsPanel) {
+    if (this.portrait && this.scene.needsCamera) {
       this.cameraWidget();
       if (this.scene.manual) this.manualButtons();
     }
@@ -421,6 +433,10 @@ class Scene {
   constructor(game) {
     this.game = game;
     this.manual = false; // показывать кнопки ручных упражнений
+  }
+  /** Сейчас нужны упражнения: показать камеру и кнопки ручного ввода. */
+  get needsCamera() {
+    return false;
   }
   handle(moves) {}
   update(dt) {}
@@ -440,7 +456,7 @@ class TitleScene extends Scene {
       ["Костёр: прокачка", () => g.change(new BonfireScene(g))],
       ["Лавка образов", () => g.change(new CosmeticsScene(g))],
       ["Рейтинг", () => g.change(new LeaderboardScene(g))],
-      ["Камера и советы", () => g.change(new CameraScene(g))],
+      ["Настройки", () => g.change(new SettingsScene(g))],
       ["Новая игра", () => this.newGame()],
     ];
     this.aura = new SwordAura();
@@ -539,13 +555,16 @@ class BonfireScene extends Scene {
     this.manual = true;
     this.embers = new Particles(216, 116, 26);
     this.ritual = null; // {stat, ex, need, done}
-    this.say("Костёр зажжён. Здоровье и эстус восстановлены.");
+    this.say("Костёр зажжён. Здоровье и зелья восстановлены.");
     this.index = 0;
     game.run = null; // отдых у костра
   }
   say(msg, t = 3.5) {
     this.message = msg;
     this.msgT = t;
+  }
+  get needsCamera() {
+    return !!this.ritual; // камера только во время ритуала прокачки
   }
   statRows() {
     return Object.keys(STATS).map((st, i) => [st, [20, 92 + i * 40, 290, 36]]);
@@ -640,7 +659,7 @@ class BonfireScene extends Scene {
     g.text(`Урон ${p.damage}  Здоровье ${p.maxHp}  Силы ${p.maxStamina}`, 22, 248, 8, COL.dim);
     const tr = p.totalReps;
     g.text(`Всего: отжим ${tr.pushup} присед ${tr.squat} звезда ${tr.jack}`, 22, 260, 8, COL.text);
-    if (!g.portrait) {
+    if (!g.portrait && this.needsCamera) {
       g.cameraWidget();
       g.manualButtons();
     }
@@ -668,11 +687,12 @@ class Skeleton {
     this.kind = enemyKind(wave);
     this.boss = this.kind === "knight" || this.kind === "chief";
     this.name = Skeleton.NAMES[this.kind];
-    const baseHp = 90 + 35 * (wave - 1);
-    const baseDmg = 16 + 4 * (wave - 1);
-    this.windupTime = Math.max(1.3, 1.9 - 0.05 * wave); // время на реакцию (присед)
+    // баланс под обычного человека без спортивной подготовки
+    const baseHp = 50 + 15 * (wave - 1);
+    const baseDmg = 12 + 2 * (wave - 1);
+    this.windupTime = Math.max(1.6, 2.3 - 0.04 * wave); // время на реакцию (присед)
     this.maxPoise = 3;
-    this.comboChance = wave >= 3 ? 0.35 : 0;
+    this.comboChance = wave >= 4 ? 0.25 : 0;
     this.maxCombo = 1;
     this.maxHp = baseHp;
     this.damage = baseDmg;
@@ -682,22 +702,22 @@ class Skeleton {
     if (this.kind === "bandit") { // быстрый и хлипкий, крадёт пепел
       this.maxHp = Math.floor(baseHp * 0.8);
       this.damage = Math.floor(baseDmg * 0.9);
-      this.windupTime = Math.max(1.2, this.windupTime * 0.9);
-      this.comboChance = 0.5;
+      this.windupTime = Math.max(1.5, this.windupTime * 0.9);
+      this.comboChance = 0.35;
       this.steal = 10 + wave;
     } else if (this.kind === "knight") {
-      this.maxHp = Math.floor(baseHp * 2.0);
-      this.damage = Math.floor(baseDmg * 1.25);
+      this.maxHp = Math.floor(baseHp * 1.6);
+      this.damage = Math.floor(baseDmg * 1.15);
       this.windupTime += 0.3; // тяжёлый двуручник замахивается дольше
       this.maxPoise = 5;
-      this.comboChance = 0.6; // серии до трёх ударов
+      this.comboChance = 0.4; // серии до трёх ударов
       this.maxCombo = 2;
       this.homeX = 188;
     } else if (this.kind === "chief") {
-      this.maxHp = Math.floor(baseHp * 2.0);
-      this.damage = Math.floor(baseDmg * 0.8); // бьёт всегда дважды, поэтому каждый удар слабее
+      this.maxHp = Math.floor(baseHp * 1.6);
+      this.damage = Math.floor(baseDmg * 0.75); // бьёт всегда дважды, поэтому каждый удар слабее
       this.maxPoise = 5;
-      this.comboChance = 1; // две сабли — всегда двойной удар
+      this.comboChance = 0.7; // две сабли — чаще всего двойной удар
       this.steal = 20 + 2 * wave;
       this.potion = true;
       this.homeX = 184;
@@ -736,7 +756,7 @@ class BattleScene extends Scene {
     this.enemy = new Skeleton(p.wave);
     this.location = locationFor(p.wave);
     this.newLand = p.wave === CASTLE_FROM_WAVE; // первый бой на новой земле
-    // Здоровье и эстус переносятся между боями до отдыха у костра
+    // Здоровье и зелья переносятся между боями до отдыха у костра
     const run = game.run || { hp: p.maxHp, estus: p.estusMax };
     this.hp = Math.min(run.hp, p.maxHp);
     this.estus = Math.min(run.estus, p.estusMax);
@@ -760,6 +780,9 @@ class BattleScene extends Scene {
     this.aura = new SwordAura();
     this.hitFx = new HitFx();
     this.victory = null;
+  }
+  get needsCamera() {
+    return true;
   }
 
   /** Где сейчас стоит герой (верхний левый угол спрайта) и в какой он позе. */
@@ -789,7 +812,7 @@ class BattleScene extends Scene {
       const crit = en.state === "recover";
       let dmg = p.damage;
       if (crit) dmg = Math.floor(dmg * p.critMult);
-      else if (en.kind === "knight") dmg = Math.floor(dmg / 2); // латы рыцаря: вне окна уязвимости — половина урона
+      else if (en.kind === "knight") dmg = Math.floor(dmg * 0.7); // латы рыцаря: вне окна уязвимости гасят 30% урона
       en.hp -= dmg;
       en.flash = 0.15;
       this.game.shake = 0.12;
@@ -837,7 +860,7 @@ class BattleScene extends Scene {
       this.invuln = Math.max(this.invuln, 0.9, untilStrike);
       sfx.dodge();
     } else if (move === "jack") {
-      if (this.estus <= 0) return this.float("Эстус пуст", this.HERO_X + 10, 90, COL.dim, 8);
+      if (this.estus <= 0) return this.float("Зелья кончились", this.HERO_X + 10, 90, COL.dim, 8);
       if (this.hp >= p.maxHp) return this.float("Здоровье полное", this.HERO_X + 10, 90, COL.dim, 8);
       this.estus -= 1;
       const heal = Math.floor(p.maxHp * 0.45);
@@ -962,23 +985,23 @@ class BattleScene extends Scene {
       en.comboLeft = 0;
       for (let i = 0; i < en.maxCombo; i++) if (Math.random() < en.comboChance) en.comboLeft += 1;
       en.set("windup", en.windupTime);
-      sfx.warn();
+      sfx.alert();
     } else if (en.state === "windup" && en.timer <= 0) {
       en.set("attack", 0.35);
       this.resolveHit();
     } else if (en.state === "attack" && en.timer <= 0) {
       if (en.comboLeft > 0) {
         en.comboLeft -= 1; // следующий, более быстрый замах сразу после удара
-        en.set("windup", en.windupTime * 0.75);
+        en.set("windup", en.windupTime * 0.85);
         this.float("ЕЩЁ УДАР!", en.x + 12, 70, "rgb(255,120,60)", 8);
-        sfx.warn();
+        sfx.alert();
       } else {
         en.set("recover", en.recoverTime());
       }
     } else if (en.state === "recover" && en.timer <= 0) {
       en.set("idle", rand(1.6, 3));
     } else if (en.state === "drink" && en.timer <= 0) {
-      const heal = Math.floor(en.maxHp * 0.3);
+      const heal = Math.floor(en.maxHp * 0.2);
       en.hp = Math.min(en.maxHp, en.hp + heal);
       this.float(`+${heal} ЗЕЛЬЕ`, en.x + 12, 70, "rgb(120,220,120)");
       en.enraged = true; // подлечился и озверел
@@ -1096,7 +1119,7 @@ class BattleScene extends Scene {
     g.gems(W - 12, GAME_H - 32, p, "right");
     g.button([12, GAME_H - 30, 104, 22], "< КОСТЁР");
 
-    [["J", "ОТЖИМАНИЕ", "удар"], ["K", "ПРИСЕД/ВНИЗ", "уворот"], ["L", "ЗВЕЗДОЧКА", "эстус"]]
+    [["J", "ОТЖИМАНИЕ", "удар"], ["K", "ПРИСЕД/ВНИЗ", "уворот"], ["L", "ЗВЕЗДОЧКА", "зелье"]]
       .forEach(([k, a, b], i) => g.text(`[${k}] ${a}: ${b}`, 16, 62 + i * 12, 8, COL.dim));
     g.text("K держать: остаться внизу", 16, 98, 8, "rgb(110,100,100)");
 
@@ -1533,10 +1556,14 @@ class CameraScene extends Scene {
     super(game);
     this.manual = true;
   }
+  get needsCamera() {
+    return true;
+  }
+
   handle(moves) {
     const g = this.game;
     if (moves.some((m) => m === "pushup" || m === "squat" || m === "jack")) sfx.rep();
-    if (g.key("Escape", "Enter") || g.tapped([W / 2 - 60, GAME_H - 30, 120, 22])) g.change(new TitleScene(g));
+    if (g.key("Escape", "Enter") || g.tapped([W / 2 - 60, GAME_H - 30, 120, 22])) g.change(new SettingsScene(g));
     if (!g.motion.ok && !g.motion.starting && g.tapped([20, 300, 200, 24])) g.motion.start();
   }
   draw(c) {
@@ -1569,6 +1596,133 @@ class CameraScene extends Scene {
       g.cameraWidget();
       g.manualButtons();
     }
+  }
+}
+
+// ------------------------------------------------------------------ Настройки
+const SETTINGS_KEY = "ash-and-iron-settings";
+const ALERT_LEVELS = [[0, "ВЫКЛ"], [0.5, "ТИХО"], [1, "НОРМА"], [1.5, "ГРОМКО"]];
+const SET_ROWS = [60, 108, 156]; // громкость, сигнал, вибрация
+const SET_MINUS = (y) => [300, y, 44, 36];
+const SET_PLUS = (y) => [556, y, 44, 36];
+const SET_TEST = [40, 204, 260, 34];
+const SET_CAMERA = [40, 256, 270, 36];
+const SET_SUPPORT = [330, 256, 270, 36];
+const SET_BACK = [W / 2 - 90, 308, 180, 34];
+
+class SettingsScene extends Scene {
+  set(key, value) {
+    const g = this.game;
+    g.settings[key] = value;
+    saveJSON(SETTINGS_KEY, g.settings);
+    setAudio(g.settings);
+  }
+  handle() {
+    const g = this.game, st = g.settings;
+    const step = (i, d) => ALERT_LEVELS[Math.max(0, Math.min(ALERT_LEVELS.length - 1, i + d))][0];
+    const ai = Math.max(0, ALERT_LEVELS.findIndex(([v]) => v === st.alert));
+    if (g.tapped(SET_MINUS(SET_ROWS[0]))) { this.set("volume", Math.max(0, Math.round(st.volume * 10 - 1) / 10)); sfx.click(); }
+    if (g.tapped(SET_PLUS(SET_ROWS[0]))) { this.set("volume", Math.min(1, Math.round(st.volume * 10 + 1) / 10)); sfx.click(); }
+    if (g.tapped(SET_MINUS(SET_ROWS[1]))) { this.set("alert", step(ai, -1)); sfx.alert(); }
+    if (g.tapped(SET_PLUS(SET_ROWS[1]))) { this.set("alert", step(ai, 1)); sfx.alert(); }
+    if (g.tapped([300, SET_ROWS[2], 300, 36])) { this.set("vibrate", !st.vibrate); sfx.click(); }
+    if (g.tapped(SET_TEST)) sfx.alert();
+    if (g.tapped(SET_CAMERA)) return g.change(new CameraScene(g));
+    if (g.tapped(SET_SUPPORT)) return g.change(new SupportScene(g));
+    if (g.key("Escape") || g.tapped(SET_BACK)) g.change(new TitleScene(g));
+  }
+  draw(c) {
+    c.drawImage(IMG.arena_bg, 0, 0);
+    c.fillStyle = "rgba(0,0,0,0.7)";
+    c.fillRect(0, 0, CW, CH);
+  }
+  /** Строка-шкала: подпись, «−», деления, «+». */
+  slider(y, label, k, value) {
+    const g = this.game;
+    g.text(label, 40, y + 12, 12);
+    g.button(SET_MINUS(y), "-", { size: 16 });
+    g.button(SET_PLUS(y), "+", { size: 16 });
+    const segs = 10, x0 = 352, w = 196, sw = w / segs;
+    for (let i = 0; i < segs; i++) {
+      g.rect([x0 + i * sw + 1, y + 8, sw - 3, 20], i < Math.round(k * segs) ? COL.gold : "rgb(50,36,40)");
+    }
+    const tw = value.length * 12 + 12; // подложка, чтобы значение читалось поверх делений
+    g.rect([x0 + w / 2 - tw / 2, y + 6, tw, 24], "rgba(10,6,14,0.92)");
+    g.text(value, x0 + w / 2, y + 12, 12, COL.gold, "center");
+  }
+  drawUi() {
+    const g = this.game, st = g.settings;
+    g.text("НАСТРОЙКИ", W / 2, 16, 24, COL.gold, "center");
+    this.slider(SET_ROWS[0], "Громкость", st.volume, `${Math.round(st.volume * 100)}%`);
+    const al = ALERT_LEVELS.find(([v]) => v === st.alert) || ALERT_LEVELS[2];
+    this.slider(SET_ROWS[1], "Сигнал «приседай»", st.alert / 1.5, al[1]);
+    g.text("Вибрация (Android)", 40, SET_ROWS[2] + 12, 12);
+    g.button([300, SET_ROWS[2], 300, 36], st.vibrate ? "ВКЛ" : "ВЫКЛ", { size: 12, selected: st.vibrate });
+    g.button(SET_TEST, "ПРОВЕРИТЬ СИГНАЛ", { size: 12 });
+    g.text("Сигнал звучит, когда враг замахнулся", 316, SET_TEST[1] + 13, 8, COL.dim);
+    g.button(SET_CAMERA, "Камера и советы", { size: 12 });
+    g.button(SET_SUPPORT, "Поддержать проект", { size: 12, color: "rgb(255,150,150)" });
+    g.button(SET_BACK, "НАЗАД", { size: 12 });
+  }
+}
+
+// ------------------------------------------------------------------ Поддержать проект
+const TIP_RECTS = TIPS.map((_, i) => [40, 150 + i * 46, 560, 40]);
+const TIP_BACK = [W / 2 - 90, 314, 180, 32];
+const HEART = ["0110110", "1111111", "1111111", "0111110", "0011100", "0001000"];
+
+class SupportScene extends Scene {
+  constructor(game) {
+    super(game);
+    this.msgT = 0;
+    this.busy = false;
+  }
+  handle() {
+    const g = this.game;
+    TIP_RECTS.forEach((r, i) => {
+      if (!this.busy && g.tapped(r)) {
+        this.busy = true;
+        g.store.tip(TIPS[i]).then((ok) => {
+          this.busy = false;
+          if (!ok) return;
+          sfx.fanfare();
+          this.msgT = 4;
+          this.burst = 1.2;
+        });
+      }
+    });
+    if (g.key("Escape") || g.tapped(TIP_BACK)) g.change(new SettingsScene(g));
+  }
+  update(dt) {
+    this.msgT -= dt;
+    this.burst = Math.max(0, (this.burst || 0) - dt);
+  }
+  draw(c) {
+    c.drawImage(IMG.title_bg, 0, 0);
+    c.fillStyle = "rgba(0,0,0,0.65)";
+    c.fillRect(0, 0, CW, CH);
+  }
+  drawUi() {
+    const g = this.game, t = g.time;
+    g.text("ПОДДЕРЖАТЬ ПРОЕКТ", W / 2, 14, 24, COL.gold, "center");
+    // пиксельное сердце, бьётся сильнее после поддержки
+    const px = 6 + Math.round((Math.sin(t * 4) + 1) * 0.5 + (this.burst || 0) * 2);
+    const hx = W / 2 - 3.5 * px, hy = 48;
+    HEART.forEach((row, y) => [...row].forEach((v, x) => {
+      if (v === "1") g.rect([hx + x * px, hy + y * px, px, px], y < 2 && x > 0 && x < 3 ? "rgb(255,150,150)" : "rgb(200,40,50)");
+    }));
+    const text = "Игра бесплатна: без рекламы и без платной силы. Если Ash & Iron помогает вам тренироваться, поддержите разработку.";
+    g.wrap(text, 70).forEach((l, i) => g.text(l, W / 2, 98 + i * 14, 8, COL.text, "center"));
+    TIPS.forEach((tip, i) => {
+      const r = TIP_RECTS[i];
+      g.button(r, "", { selected: i === 0 });
+      g.text(tip.name, r[0] + 16, r[1] + 8, 12, COL.gold);
+      g.text(tip.desc, r[0] + 16, r[1] + 26, 8, COL.dim);
+      g.text(tip.price, r[0] + r[2] - 16, r[1] + 14, 12, "rgb(120,220,255)", "right");
+    });
+    if (this.msgT > 0) g.text("Спасибо, рыцарь! Костёр горит ярче.", W / 2, 292, 8, COL.gold, "center");
+    else if (g.store.tips > 0) g.text(`Вы поддержали проект: ${g.store.tips} раз. Спасибо!`, W / 2, 292, 8, "rgb(255,150,150)", "center");
+    g.button(TIP_BACK, "НАЗАД", { size: 12 });
   }
 }
 
@@ -1619,4 +1773,4 @@ export async function boot() {
   document.getElementById("start-manual").onclick = () => start(false);
 }
 
-export { BattleScene, BonfireScene, CameraScene, CosmeticsScene, LeaderboardScene, ShopScene, TitleScene };
+export { BattleScene, BonfireScene, CameraScene, CosmeticsScene, LeaderboardScene, SettingsScene, ShopScene, SupportScene, TitleScene };
