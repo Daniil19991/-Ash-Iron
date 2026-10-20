@@ -62,13 +62,9 @@ export class Motion {
     }
     try {
       this.status = "доступ к камере…";
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false,
-      });
-      this.video.srcObject = stream;
-      await this.video.play();
+      await this._openStream();
     } catch (e) {
+      this.denied = !!e && (e.name === "NotAllowedError" || e.name === "SecurityError");
       this.status = "нет доступа к камере";
       return;
     }
@@ -94,11 +90,45 @@ export class Motion {
     }
     this.ok = true;
     this.status = "камера активна";
+    // iOS выключает камеру, когда приложение свёрнуто, — после возврата включаем снова
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") this.resume();
+    });
     const loop = () => {
       this._detect();
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
+  }
+
+  async _openStream() {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false,
+    });
+    this.video.srcObject = stream;
+    await this.video.play();
+  }
+
+  /** Камера отключена системой (сворачивание, звонок) — открыть поток заново. */
+  async resume() {
+    if (!this.ok || this.resuming) return;
+    const s = this.video.srcObject;
+    const live = s && s.getVideoTracks().some((t) => t.readyState === "live");
+    if (live && !this.video.paused) return;
+    this.resuming = true;
+    try {
+      if (live) await this.video.play();
+      else {
+        if (s) s.getTracks().forEach((t) => t.stop());
+        await this._openStream();
+      }
+      this.status = "камера активна";
+    } catch (e) {
+      this.status = "камера отключена: нажмите «Камера и советы»";
+    } finally {
+      this.resuming = false;
+    }
   }
 
   _detect() {

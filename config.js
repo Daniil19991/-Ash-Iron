@@ -8,7 +8,21 @@ export const LEADERBOARD = {
 };
 
 // Покупки. На сайте и в тестовых сборках — тестовый режим: оплата не списывается.
-// В приложении для App Store здесь включится StoreKit (второй этап).
 export const STORE = {
   bundleId: "com.ashandiron.fitnessrpg",
+};
+
+// Покупки в iOS-приложении через RevenueCat. Ключ сюда НЕ вписывается: его подставляет
+// сборка из секрета REVENUECAT_IOS_KEY (mobile/build_ios.sh). Пустой ключ — тестовый режим игры.
+// Ключ Test Store (начинается с "test_") — покупки симулируются, деньги не списываются.
+// Ключ App Store ("appl_") игра не примет, пока allowRealPayments = false.
+export const REVENUECAT = {
+  iosApiKey: "",
+  allowRealPayments: false,
+};
+
+// iOS-приложение. Первая сборка: рейтинг только на устройстве, без сервера —
+// до исправления правил Supabase, модерации и удаления данных. Сайт и Android не затронуты.
+export const IOS = {
+  leaderboardOnline: false,
 };

@@ -4,7 +4,8 @@
 import { NAMES } from "./exercises.js";
 import { Motion } from "./motion.js";
 import {
-  BOSS_EVERY, CASTLE_FROM_WAVE, LOCATIONS, RELICS, SHOP_ORDER, SWORDS, enemyKind, isBossWave, item, locationFor, priceText, rewards,
+  BOSS_EVERY, CASTLE_FROM_WAVE, GRAVEYARD_FROM_WAVE, LOCATIONS, RELICS, SHOP_ORDER, SWORDS, enemyKind, isBossWave, item,
+  locationFor, locationStart, priceText, rewards,
 } from "./gear.js";
 import { Player, STATS } from "./player.js";
 import { initAudio, setAudio, sfx } from "./sfx.js";
@@ -13,6 +14,8 @@ import { Leaderboard } from "./leaderboard.js";
 import { Profile } from "./profile.js";
 import { Store, TIPS } from "./store.js";
 import { loadJSON, saveJSON } from "./storage.js";
+import { isNative, keepAwake, openAppSettings, openUrl, restoreBackup, vibrate } from "./platform.js";
+import { LANGS, getLang, setLang, tf, tr } from "./i18n.js";
 import { confirmDialog, modalOpen, promptName } from "./ui.js";
 
 const CW = 320, CH = 180;
@@ -25,10 +28,11 @@ const COL = {
   red: "rgb(200,40,36)", green: "rgb(70,160,70)", shadow: "rgb(8,6,12)",
 };
 
-// Облик героя по реликвиям: доспех Костяного Рыцаря (рога, тёмные латы) и/или Амулет Углей
-const LOOKS = ["base", "armor", "amulet", "both"];
+// Облик героя по реликвиям: доспех Костяного Рыцаря (рога, тёмные латы) или Короля-Призрака
+// (корона, бирюзовые латы — надевается поверх костяного) и/или Амулет Углей
 function heroLook(owned) {
   const armor = owned.includes("armor"), amulet = owned.includes("amulet");
+  if (owned.includes("kingarmor")) return amulet ? "king_amulet" : "king";
   return armor && amulet ? "both" : armor ? "armor" : amulet ? "amulet" : "base";
 }
 /** Префикс спрайтов героя: меч (или купленный облик меча skin) и облик по реликвиям. */
@@ -36,12 +40,15 @@ const heroSprite = (sword, owned, skin = null) => `hero_${skin || sword}_${heroL
 
 // След удара для каждого меча
 const SLASH_TIME = 0.18;
-const SLASH_COLORS = { rusty: [190, 140, 100], steel: [235, 240, 250], great: [200, 210, 230], ash: [255, 150, 60] };
+const SLASH_COLORS = {
+  rusty: [190, 140, 100], steel: [235, 240, 250], great: [200, 210, 230], ash: [255, 150, 60],
+  giant: [210, 220, 240], barbell: [170, 180, 200], radiator: [255, 170, 60],
+};
 
 /** Дуга следа удара: k от 0 (начало) до 1 (исчезла). Двуручник — шире, пепельный — огненный. */
 function drawSlash(c, x, y, sword, k, skin = null) {
   if (skin) return drawSkinSlash(c, x, y, skin, k);
-  const big = sword === "great";
+  const big = sword === "great" || sword === "giant" || sword === "barbell";
   const radius = big ? 22 : 16;
   const base = SLASH_COLORS[sword];
   const fade = Math.max(0, 1 - k);
@@ -54,7 +61,7 @@ function drawSlash(c, x, y, sword, k, skin = null) {
       c.fillRect(Math.floor(x + Math.cos(rad) * (radius - shrink) * 0.55), Math.floor(y + Math.sin(rad) * (radius - shrink)), width, width);
     }
   }
-  if (sword === "ash") {
+  if (sword === "ash" || sword === "radiator") {
     c.fillStyle = "rgb(255,200,90)";
     for (let i = 0; i < 4; i++) c.fillRect(x + Math.floor(rand(-4, 10)), y + Math.floor(rand(-radius, radius)), 1, 1);
   }
@@ -128,6 +135,8 @@ class Game {
     this.player = Player.load();
     this.profile = Profile.load(); // имя в рейтинге, рекорд и облик — переживают «Новую игру»
     this.store = new Store(confirmDialog);
+    this.store.init().then(() => this.syncPaid()); // RevenueCat в iOS-приложении; иначе — тестовый режим
+    this.syncPaid();
     this.leaderboard = new Leaderboard();
     this.settings = { volume: 0.8, alert: 1, vibrate: true, ...loadJSON(SETTINGS_KEY, {}) };
     setAudio(this.settings);
@@ -197,6 +206,7 @@ class Game {
 
   // --- рисование
   text(s, x, y, size = 8, color = COL.text, align = "left", shadow = true, c = this.ctx) {
+    s = tr(s); // язык интерфейса
     c.font = `${size}px ${FONT}`;
     c.textBaseline = "top";
     c.textAlign = align;
@@ -210,6 +220,7 @@ class Game {
   }
 
   wrap(s, maxChars) {
+    s = tr(s); // переводим до переноса строк
     const lines = [];
     let cur = "";
     for (const w of s.split(" ")) {
@@ -258,8 +269,9 @@ class Game {
     return ["KeyK", "Digit2", "Numpad2"].some((c) => this.held.has(c));
   }
 
-  /** Клавиши тестировщика: F2 — камни и пепел, F3 — следующий бой с боссом, F4 — к замку. */
+  /** Клавиши тестировщика: F2 — камни и пепел, F3 — следующий бой с боссом, F4 — следующая локация. */
   testKeys() {
+    if (isNative()) return; // клавиши тестировщика только в браузерной версии
     const p = this.player;
     if (this.codes.includes("F2")) {
       p.redGems += 10;
@@ -272,8 +284,9 @@ class Game {
       this.say(`Тест: следующий бой - босс (#${p.wave})`);
     }
     if (this.codes.includes("F4")) {
-      p.wave = Math.max(p.wave, CASTLE_FROM_WAVE);
-      this.say(`Тест: подступы к замку (#${p.wave})`);
+      const loc = Math.min(3, locationFor(p.wave) + 1);
+      p.wave = Math.max(p.wave, locationStart(loc));
+      this.say(tf("Тест: {loc} (#{n})", { loc: LOCATIONS[loc].name, n: p.wave }));
     }
     if (["F2", "F3", "F4"].some((k) => this.codes.includes(k))) p.save();
   }
@@ -281,6 +294,16 @@ class Game {
   say(text, t = 2.5) {
     this.toast = text;
     this.toastT = t;
+  }
+
+  /** Оплаченное оружие (гриф) остаётся у персонажа и после «Новой игры» и восстановления покупок. */
+  syncPaid() {
+    for (const [key, sw] of Object.entries(SWORDS)) {
+      if (sw.paid && this.store.owns(sw.productId) && !this.player.owned.includes(key)) {
+        this.player.grantPaid(key, false);
+        this.player.save();
+      }
+    }
   }
 
   /** Купленный и надетый облик данного типа (sword / hit / victory) или null. */
@@ -473,6 +496,7 @@ class TitleScene extends Scene {
     }
     const g = this.game;
     g.player = new Player();
+    g.syncPaid();
     g.player.save();
     g.run = null;
     g.change(new BonfireScene(g));
@@ -519,7 +543,8 @@ class TitleScene extends Scene {
     c.fill();
     c.drawImage(anim("bonfire", t, 8, 4), 200, GROUND_TITLE - 22);
     const p = this.game.player;
-    c.drawImage(anim(`${heroSprite(p.sword, p.owned, this.game.skin)}_idle`, t, 1.5, 2), 172, GROUND_TITLE - 32);
+    const heroIdle = anim(`${heroSprite(p.sword, p.owned, this.game.skin)}_idle`, t, 1.5, 2);
+    c.drawImage(heroIdle, 172, GROUND_TITLE - heroIdle.height);
     this.aura.draw(c, this.game.skin, "idle", 172, GROUND_TITLE - 32, t);
     const sx = 270, sy = GROUND_TITLE - 32;
     c.drawImage(IMG.skeleton_dark_0, sx, sy);
@@ -540,11 +565,11 @@ class TitleScene extends Scene {
       g.button(r, confirm ? "Стереть? Ещё раз" : this.items[i][0],
         { selected: i === this.index, color: confirm ? COL.red : undefined, size: this.textSize(r) });
     });
-    const foe = isBossWave(p.wave) ? "БОСС" : Skeleton.NAMES[enemyKind(p.wave)].toLowerCase();
-    const status = `Ур.${p.level} Пепел:${p.souls} ${LOCATIONS[locationFor(p.wave)].name}: ${foe} #${p.wave}`;
+    const foe = isBossWave(p.wave) ? tr("БОСС") : tr(Skeleton.NAMES[enemyKind(p.wave)]).toLowerCase();
+    const status = `${tf("Ур.{lv} Пепел:{ash}", { lv: p.level, ash: p.souls })} ${tr(LOCATIONS[locationFor(p.wave)].name)}: ${foe} #${p.wave}`;
     if (g.portrait) g.text(status, W / 2, GAME_H + 14, status.length * 12 <= W - 24 ? 12 : 8, COL.text, "center");
     else g.text(status, 12, GAME_H - 16, 8, COL.dim);
-    if (!g.portrait) g.text("ПК: J K L, тест F2-F4", W - 12, GAME_H - 16, 8, COL.dim, "right");
+    if (!g.portrait && !isNative()) g.text("ПК: J K L, тест F2-F4", W - 12, GAME_H - 16, 8, COL.dim, "right");
   }
 }
 
@@ -616,10 +641,10 @@ class BonfireScene extends Scene {
         p.save();
         g.recordProgress();
         this.ritual = null;
-        this.say(`${STATS[st][0]} повышена до ${p[st]}!`, 4);
+        this.say(tf("{stat} повышена до {n}!", { stat: STATS[st][0], n: p[st] }), 4);
         this.embers.rate = 120;
         sfx.level();
-        if (navigator.vibrate) navigator.vibrate([60, 40, 120]);
+        vibrate([60, 40, 120]);
       }
       return;
     }
@@ -660,7 +685,7 @@ class BonfireScene extends Scene {
     c.drawImage(anim("bonfire", t, 8, 4), 200, GROUND_TITLE - 44, 32, 44);
     const p = this.game.player, hs = heroSprite(p.sword, p.owned, this.game.skin);
     const hero = this.ritual && this.ritual.done % 2 ? IMG[`${hs}_attack_0`] : IMG[`${hs}_idle_0`];
-    c.drawImage(hero, 168, GROUND_TITLE - 32);
+    c.drawImage(hero, 168, GROUND_TITLE - hero.height);
     this.embers.draw(c);
   }
   drawUi() {
@@ -693,7 +718,7 @@ class BonfireScene extends Scene {
     if (this.ritual) {
       const { stat, ex, need, done } = this.ritual;
       g.rect([0, GAME_H - 84, W, 84], "rgba(0,0,0,0.85)");
-      g.text(`Ритуал: ${STATS[stat][0]}`, W / 2, GAME_H - 78, 8, COL.dim, "center");
+      g.text(tf("Ритуал: {stat}", { stat: STATS[stat][0] }), W / 2, GAME_H - 78, 8, COL.dim, "center");
       g.text(`${NAMES[ex]}: ${done} / ${need}`, W / 2, GAME_H - 64, 16, COL.gold, "center");
       g.bar(W / 2 - 150, GAME_H - 40, 300, 8, done / need, "rgb(230,140,50)");
       g.button([W / 2 - 70, GAME_H - 26, 140, 22], "ПРЕРВАТЬ");
@@ -753,7 +778,7 @@ class BonfireScene extends Scene {
       g.rect([tx, y, tw, RITUAL_TAB_H], "rgba(10,6,14,0.88)");
       g.ctx.strokeStyle = COL.gold;
       g.ctx.strokeRect(tx + 0.5, y + 0.5, tw - 1, RITUAL_TAB_H - 1);
-      g.text(`Ритуал: ${STATS[stat][0]}`, x + w / 2, y + 8, 12, COL.dim, "center");
+      g.text(tf("Ритуал: {stat}", { stat: STATS[stat][0] }), x + w / 2, y + 8, 12, COL.dim, "center");
       g.text(`${NAMES[ex]}: ${done} / ${need}`, x + w / 2, y + 28, 24, COL.gold, "center");
       g.bar(tx + 24, y + 64, tw - 48, 12, done / need, "rgb(230,140,50)");
       g.button(this.cancelRect(), "ПРЕРВАТЬ", { size: 16 });
@@ -765,14 +790,18 @@ class BonfireScene extends Scene {
 }
 
 // ------------------------------------------------------------------ Бой
-/** Враг волны: скелет, разбойник или босс локации (Костяной Рыцарь / Глава разбойников). */
+/** Враг волны: скелет, разбойник, зомби, летучая мышь или босс локации. */
 class Skeleton {
-  static NAMES = { skeleton: "Скелет-страж", bandit: "Разбойник", knight: "Костяной Рыцарь", chief: "Глава разбойников" };
+  static NAMES = {
+    skeleton: "Скелет-страж", bandit: "Разбойник", knight: "Костяной Рыцарь", chief: "Глава разбойников",
+    zombie: "Зомби", bat: "Летучая мышь", wraith: "Король-Призрак",
+  };
+  static BOSSES = ["knight", "chief", "wraith"];
 
   constructor(wave) {
     this.wave = wave;
     this.kind = enemyKind(wave);
-    this.boss = this.kind === "knight" || this.kind === "chief";
+    this.boss = Skeleton.BOSSES.includes(this.kind);
     this.name = Skeleton.NAMES[this.kind];
     // баланс под обычного человека без спортивной подготовки
     const baseHp = 50 + 15 * (wave - 1);
@@ -785,6 +814,7 @@ class Skeleton {
     this.damage = baseDmg;
     this.steal = 0; // сколько пепла крадёт удар
     this.potion = false; // глава разбойников один раз пьёт зелье
+    this.reincarnate = false; // Король-Призрак один раз встаёт после смерти
     this.homeX = 200;
     if (this.kind === "bandit") { // быстрый и хлипкий, крадёт пепел
       this.maxHp = Math.floor(baseHp * 0.8);
@@ -808,6 +838,25 @@ class Skeleton {
       this.steal = 20 + 2 * wave;
       this.potion = true;
       this.homeX = 184;
+    } else if (this.kind === "zombie") { // медленный и живучий
+      this.maxHp = Math.floor(baseHp * 1.3);
+      this.damage = Math.floor(baseDmg * 1.1);
+      this.windupTime += 0.2;
+      this.comboChance = 0.15;
+    } else if (this.kind === "bat") { // хрупкая, но кусает быстро и сериями
+      this.maxHp = Math.floor(baseHp * 0.6);
+      this.damage = Math.floor(baseDmg * 0.8);
+      this.windupTime = Math.max(1.5, this.windupTime * 0.85);
+      this.comboChance = 0.4;
+    } else if (this.kind === "wraith") { // Король-Призрак: серии ударов и одно возрождение
+      this.maxHp = Math.floor(baseHp * 1.6);
+      this.damage = Math.floor(baseDmg * 1.1);
+      this.windupTime += 0.2;
+      this.maxPoise = 5;
+      this.comboChance = 0.4;
+      this.maxCombo = 2;
+      this.reincarnate = true;
+      this.homeX = 184;
     }
     this.hp = this.maxHp;
     this.poise = this.maxPoise;
@@ -829,6 +878,11 @@ class Skeleton {
 }
 
 const DRINK_TIME = 2.5; // сколько глава разбойников пьёт зелье
+const REVIVE_TIME = 2.5; // Король-Призрак встаёт после первой смерти
+const STUN_TIME = 2.0; // ошеломление гигантским мечом (враг открыт для крита)
+const BURN_EVERY = 1; // жар Радиатора: урон раз в секунду
+const HIT_X = { knight: 30, chief: 28, wraith: 31 }; // центр врага для эффектов и «!»
+const HEAD_Y = { knight: 58, chief: 56, wraith: 64, bat: 56 };
 const DRINK_HITS = 3; // ударов, чтобы выбить зелье
 const READY_TIME = 4; // секунд на то, чтобы отойти от телефона
 const RECOVER_TIME = 1.6; // окно для удара после атаки скелета
@@ -842,7 +896,9 @@ class BattleScene extends Scene {
     this.HERO_X = 86;
     this.enemy = new Skeleton(p.wave);
     this.location = locationFor(p.wave);
-    this.newLand = p.wave === CASTLE_FROM_WAVE; // первый бой на новой земле
+    this.newLand = p.wave === CASTLE_FROM_WAVE || p.wave === GRAVEYARD_FROM_WAVE; // первый бой на новой земле
+    this.burnT = 0;
+    this.ghosts = []; // призрачное пламя Короля-Призрака
     // Здоровье и зелья переносятся между боями до отдыха у костра
     const run = game.run || { hp: p.maxHp, estus: p.estusMax };
     this.hp = Math.min(run.hp, p.maxHp);
@@ -883,6 +939,14 @@ class BattleScene extends Scene {
     this.texts.push({ text, x, y, color, size, ttl: 1 });
   }
 
+  /** Звук усталости: не чаще раза в секунду, чтобы не сливался при частых попытках удара. */
+  exhaustedSound() {
+    const now = this.game.time;
+    if (now - (this.exhaustedAt ?? -9) < 1) return;
+    this.exhaustedAt = now;
+    sfx.exhausted();
+  }
+
   saveRun() {
     this.game.run = { hp: this.hp, estus: this.estus };
   }
@@ -890,8 +954,13 @@ class BattleScene extends Scene {
   act(move) {
     const p = this.game.player, en = this.enemy;
     if (move === "pushup") {
-      if (this.stamina < p.attackCost) return this.float("Нет сил!", this.HERO_X + 10, 90, COL.green, 8);
+      if (en.state === "revive") return this.float("НЕУЯЗВИМ", en.x + 12, 90, "rgb(120,255,230)", 8);
+      if (this.stamina < p.attackCost) {
+        this.exhaustedSound();
+        return this.float("Нет сил!", this.HERO_X + 10, 90, COL.green, 8);
+      }
       this.stamina -= p.attackCost;
+      if (this.stamina < p.attackCost) this.exhaustedSound(); // сил на следующий удар уже нет
       this.regenPause = 0.6;
       this.action = "attack";
       this.actionT = 0.35;
@@ -908,7 +977,7 @@ class BattleScene extends Scene {
       this.float(label, en.x + 12, 90, crit ? COL.gold : COL.text);
       const hit = this.game.style("hit");
       if (hit) { // купленный эффект удара
-        const cx = { knight: 30, chief: 28 }[en.kind] || 12, cy = en.boss ? 24 : 18;
+        const cx = HIT_X[en.kind] || 12, cy = en.boss ? 24 : en.kind === "bat" ? 34 : 18;
         this.hitFx.spawn(hit, Math.round(en.x) + cx, GROUND_ARENA - cy);
         hit === "hit_storm" ? sfx.thunder() : sfx.souls();
       }
@@ -937,7 +1006,15 @@ class BattleScene extends Scene {
         en.set("drink", DRINK_TIME);
         this.float("ПЬЁТ ЗЕЛЬЕ!", en.x + 12, 60, "rgb(255,90,90)");
       }
-      if (en.hp <= 0) this.win();
+      // гигантский меч иногда ошеломляет: враг теряет замах и открыт для крита
+      const stun = p.weapon.stun || 0;
+      if (stun && en.hp > 0 && en.state !== "drink" && Math.random() < stun) {
+        en.comboLeft = 0;
+        en.set("recover", STUN_TIME);
+        this.float("ОШЕЛОМЛЁН!", en.x + 12, 66, "rgb(255,230,120)");
+        sfx.crit();
+      }
+      if (en.hp <= 0) this.defeat();
     } else if (move === "squat_down" || move === "pushup_down") {
       // Уворот бесплатный: приседать/опускаться можно сколько угодно.
       // Если уже идёт замах — игрок пригнулся заранее и защищён до самого удара.
@@ -948,15 +1025,32 @@ class BattleScene extends Scene {
       sfx.dodge();
     } else if (move === "jack") {
       if (this.estus <= 0) return this.float("Зелья кончились", this.HERO_X + 10, 90, COL.dim, 8);
-      if (this.hp >= p.maxHp) return this.float("Здоровье полное", this.HERO_X + 10, 90, COL.dim, 8);
+      if (this.hp >= p.maxHp && this.stamina >= p.maxStamina) return this.float("Здоровье и силы полные", this.HERO_X + 10, 90, COL.dim, 8);
       this.estus -= 1;
       const heal = Math.floor(p.maxHp * 0.45);
       this.hp = Math.min(p.maxHp, this.hp + heal);
+      this.stamina = p.maxStamina; // зелье восстанавливает и выносливость
+      this.float("+СИЛЫ", this.HERO_X + 10, 74, COL.green, 8);
       this.action = "heal";
       this.actionT = 0.8;
       sfx.heal();
       this.float(`+${heal}`, this.HERO_X + 10, 90, "rgb(255,170,60)");
     }
+  }
+
+  /** Здоровье врага кончилось: Король-Призрак один раз возрождается, остальные погибают. */
+  defeat() {
+    const en = this.enemy;
+    if (en.reincarnate) {
+      en.reincarnate = false;
+      en.hp = 0;
+      en.comboLeft = 0;
+      en.set("revive", REVIVE_TIME);
+      this.float("ВОЗРОЖДЕНИЕ!", en.x + 12, 56, "rgb(120,255,230)");
+      sfx.souls();
+      return;
+    }
+    this.win();
   }
 
   win() {
@@ -985,7 +1079,7 @@ class BattleScene extends Scene {
     } else {
       sfx.win();
     }
-    if (navigator.vibrate) navigator.vibrate([40, 30, 40]);
+    vibrate([40, 30, 40]);
   }
 
   die() {
@@ -1036,6 +1130,7 @@ class BattleScene extends Scene {
     const [hx, hy, pose] = this.heroPose();
     this.aura.update(dt, this.game.skin, pose, hx, hy);
     this.hitFx.update(dt);
+    if (en.kind === "wraith") this.updateGhosts(dt);
     if (this.result) {
       this.resultT += dt;
       if (this.victory) this.victory.update(dt);
@@ -1065,6 +1160,18 @@ class BattleScene extends Scene {
     this.regenPause -= dt;
     if (this.regenPause <= 0) this.stamina = Math.min(p.maxStamina, this.stamina + p.staminaRegen * dt);
 
+    // Радиатор: жар обжигает врага каждую секунду (не во время возрождения)
+    const burn = p.weapon.burn || 0;
+    if (burn && en.state !== "revive" && en.state !== "dead") {
+      this.burnT += dt;
+      if (this.burnT >= BURN_EVERY) {
+        this.burnT -= BURN_EVERY;
+        en.hp -= burn;
+        this.float(`-${burn}`, en.x + 20, 100, "rgb(255,150,60)", 8);
+        if (en.hp <= 0) return this.defeat();
+      }
+    }
+
     // ИИ скелета: ожидание -> замах (окно для приседа) -> удар -> уязвимость
     en.timer -= dt;
     if (en.state === "idle" && en.timer <= 0) {
@@ -1087,6 +1194,14 @@ class BattleScene extends Scene {
       }
     } else if (en.state === "recover" && en.timer <= 0) {
       en.set("idle", rand(1.6, 3));
+    } else if (en.state === "revive") {
+      en.hp = Math.min(en.maxHp * 0.5, en.hp + (en.maxHp * 0.5 * dt) / REVIVE_TIME); // полоска заполняется
+      if (en.timer <= 0) {
+        en.hp = Math.floor(en.maxHp * 0.5);
+        en.enraged = true; // вернулся злее: быстрее замах
+        en.windupTime *= 0.9;
+        en.set("idle", 1);
+      }
     } else if (en.state === "drink" && en.timer <= 0) {
       const heal = Math.floor(en.maxHp * 0.2);
       en.hp = Math.min(en.maxHp, en.hp + heal);
@@ -1097,6 +1212,20 @@ class BattleScene extends Scene {
     }
     const target = en.state === "attack" ? this.HERO_X + 30 : en.homeX;
     en.x += (target - en.x) * Math.min(1, dt * (en.state === "attack" ? 18 : 5));
+  }
+
+  /** Призрачное бирюзовое пламя вокруг Короля-Призрака. */
+  updateGhosts(dt) {
+    const en = this.enemy;
+    if (en.state !== "dead" && Math.random() < dt * (en.state === "revive" ? 60 : 18)) {
+      this.ghosts.push({ x: en.x + rand(14, 48), y: GROUND_ARENA - rand(4, 46), vy: -rand(8, 20), life: rand(0.6, 1.3) });
+    }
+    for (const gp of this.ghosts) {
+      gp.y += gp.vy * dt;
+      gp.x += rand(-6, 6) * dt;
+      gp.life -= dt;
+    }
+    this.ghosts = this.ghosts.filter((gp) => gp.life > 0);
   }
 
   resolveHit() {
@@ -1110,7 +1239,7 @@ class BattleScene extends Scene {
     this.hurtT = 0.3;
     this.game.shake = en.boss ? 0.4 : 0.3;
     sfx.hurt();
-    if (navigator.vibrate) navigator.vibrate(en.boss ? 250 : 150);
+    vibrate(en.boss ? 250 : 150);
     this.float(`-${dmg}`, this.HERO_X + 10, 86, COL.red);
     const p = this.game.player;
     if (en.steal && p.souls > 0) { // разбойники крадут пепел
@@ -1132,20 +1261,29 @@ class BattleScene extends Scene {
       this.torchL.draw(c);
       this.torchR.draw(c);
     } else {
-      c.drawImage(IMG.castle_bg, 0, 0);
+      c.drawImage(IMG[LOCATIONS[this.location].bg], 0, 0);
     }
 
     let spr;
-    const kind = { skeleton: "skeleton", bandit: "bandit", knight: "boss", chief: "chief" }[en.kind];
+    const kind = { knight: "boss" }[en.kind] || en.kind;
     if (en.state === "drink") spr = anim("chief_drink", t, 4, 2);
+    else if (en.state === "revive") spr = anim("wraith_revive", t, 4, 2);
     else if (en.state === "dead") spr = IMG[`${kind}_dead_0`];
     else if (en.flash > 0) spr = IMG[`${kind}_hurt_0`];
     else if (en.state === "windup") spr = anim(`${kind}_windup`, t, 8, 2);
     else if (en.state === "attack") spr = IMG[`${kind}_attack_0`];
     else if (en.boss && en.enraged) spr = anim(`${kind}_enraged`, t, 1.5, 2);
-    else spr = anim(`${kind}_idle`, t, 1.5, 2);
+    else spr = anim(`${kind}_idle`, t, en.kind === "bat" ? 8 : 1.5, 2); // мышь машет крыльями
     const ex = Math.round(en.x) - (en.state === "attack" ? 8 : 0);
-    c.drawImage(spr, ex, GROUND_ARENA - spr.height);
+    // летучая мышь висит в воздухе и пикирует при атаке, погибшая лежит на земле
+    const lift = en.kind !== "bat" || en.state === "dead" ? 0 : en.state === "attack" ? 10 : 30 + Math.round(Math.sin(t * 4) * 3);
+    c.drawImage(spr, ex, GROUND_ARENA - spr.height - lift);
+    if (en.kind === "wraith") {
+      for (const gp of this.ghosts) {
+        c.fillStyle = gp.life > 0.8 ? "rgb(200,255,240)" : gp.life > 0.4 ? "rgb(110,240,200)" : "rgb(40,120,110)";
+        c.fillRect(Math.floor(gp.x), Math.floor(gp.y), 1, 1);
+      }
+    }
 
     const p = this.game.player;
     const skin = this.game.skin;
@@ -1165,7 +1303,7 @@ class BattleScene extends Scene {
     this.aura.draw(c, skin, pose, hx, hy, t);
     if (this.slashT > 0) drawSlash(c, hx + 34, GROUND_ARENA - 19, p.sword, 1 - this.slashT / SLASH_TIME, skin); // след удара
     this.hitFx.draw(c);
-    if (p.sword === "ash" && !skin) { // раскалённый клинок искрит
+    if ((p.sword === "ash" || p.sword === "radiator") && !skin) { // раскалённый клинок искрит
       [this.bladeEmbers.x, this.bladeEmbers.y] = this.action === "attack" ? [hx + 30, GROUND_ARENA - 20] : [hx + 20, GROUND_ARENA - 10];
       this.bladeEmbers.draw(c);
     }
@@ -1196,10 +1334,10 @@ class BattleScene extends Scene {
     if (en.boss) { // полоска босса — в золотой рамке
       g.ctx.strokeStyle = COL.gold;
       g.ctx.strokeRect(137.5, GAME_H - 34.5, 345, 11);
-      const extra = en.state === "drink" ? ` - ЗЕЛЬЕ ${en.drinkHits}/${DRINK_HITS}` : en.enraged ? " - ЯРОСТЬ" : "";
-      g.text(`БОСС: ${en.name} #${en.wave}${extra}`, 140, GAME_H - 48, 8, en.enraged || en.state === "drink" ? "rgb(255,120,80)" : COL.gold);
+      const extra = en.state === "drink" ? ` - ЗЕЛЬЕ ${en.drinkHits}/${DRINK_HITS}` : en.state === "revive" ? " - ВОССТАЁТ" : en.enraged ? " - ЯРОСТЬ" : "";
+      g.text(`${tr("БОСС")}: ${tr(en.name)} #${en.wave}${tr(extra)}`, 140, GAME_H - 48, 8, en.enraged || en.state === "drink" || en.state === "revive" ? "rgb(255,120,80)" : COL.gold);
     } else {
-      g.text(`${en.name} #${en.wave}`, 140, GAME_H - 46, 8);
+      g.text(`${tr(en.name)} #${en.wave}`, 140, GAME_H - 46, 8);
     }
     g.bar(140, GAME_H - 32, 340, 8, Math.max(0, en.hp) / en.maxHp, "rgb(150,20,20)");
     g.text(`Пепел: ${p.souls}`, W - 12, GAME_H - 16, 8, COL.gold, "right");
@@ -1207,7 +1345,7 @@ class BattleScene extends Scene {
     g.button([12, GAME_H - 30, 104, 22], "< КОСТЁР");
 
     [["J", "ОТЖИМАНИЕ", "удар"], ["K", "ПРИСЕД/ВНИЗ", "уворот"], ["L", "ЗВЕЗДОЧКА", "зелье"]]
-      .forEach(([k, a, b], i) => g.text(`[${k}] ${a}: ${b}`, 16, 62 + i * 12, 8, COL.dim));
+      .forEach(([k, a, b], i) => g.text(`[${k}] ${tr(a)}: ${tr(b)}`, 16, 62 + i * 12, 8, COL.dim));
     g.text("K держать: остаться внизу", 16, 98, 8, "rgb(110,100,100)");
 
     const plank = g.motion.ok && g.motion.detector.posture === "планка";
@@ -1220,9 +1358,12 @@ class BattleScene extends Scene {
         knight: "Латы держат удары: бей в окно уязвимости",
         chief: "Крадёт пепел. На половине здоровья пьёт зелье: выбей 3 ударами",
         bandit: "Быстрый удар и крадёт пепел: не пропускай",
+        zombie: "Медленный, но живучий",
+        bat: "Хрупкая, но кусает сериями",
+        wraith: "Один раз восстанет из мёртвых: добей дважды",
       };
-      if (this.newLand) g.text("НОВАЯ ЗЕМЛЯ: ПОДСТУПЫ К ЗАМКУ", W / 2, 44, 8, "rgb(150,200,140)", "center");
-      if (en.boss) g.text(`БОСС: ${en.name.toUpperCase()}`, W / 2, 34, 16, "rgb(255,90,60)", "center");
+      if (this.newLand) g.text(`${tr("НОВАЯ ЗЕМЛЯ")}: ${tr(LOCATIONS[this.location].name).toUpperCase()}`, W / 2, 44, 8, "rgb(150,200,140)", "center");
+      if (en.boss) g.text(`${tr("БОСС")}: ${tr(en.name).toUpperCase()}`, W / 2, 34, 16, "rgb(255,90,60)", "center");
       if (tips[en.kind]) g.text(tips[en.kind], W / 2, 140, 8, COL.dim, "center");
       g.text("ПРИГОТОВЬТЕСЬ", W / 2, 60, 16, COL.gold, "center");
       g.text(`${Math.ceil(this.ready)}`, W / 2, 84, 32, COL.text, "center");
@@ -1232,8 +1373,8 @@ class BattleScene extends Scene {
       const pulse = 0.5 + 0.5 * Math.sin(g.time * 14);
       g.text(plank ? "ОПУСТИСЬ!" : "ПРИСЕДАЙ!", W / 2, 56, 32, `rgb(255,${Math.floor(60 + 120 * pulse)},40)`, "center");
       g.bar(W / 2 - 80, 96, 160, 5, k, "rgb(255,90,50)");
-      const top = GROUND_ARENA - ({ knight: 58, chief: 56 }[en.kind] || 44);
-      g.text("!", Math.round(en.x + ({ knight: 30, chief: 28 }[en.kind] || 12)) * 2, 2 * top, 24, "rgb(255,200,60)", "center");
+      const top = GROUND_ARENA - (HEAD_Y[en.kind] || 44);
+      g.text("!", Math.round(en.x + (HIT_X[en.kind] || 12)) * 2, 2 * top, 24, "rgb(255,200,60)", "center");
     } else if (en.state === "recover" && !this.result) {
       g.text("Окно для удара: ОТЖИМАЙСЯ!", W / 2, 70, 8, COL.gold, "center");
     } else if (en.state === "drink" && !this.result) {
@@ -1268,11 +1409,11 @@ class BattleScene extends Scene {
 
 // ------------------------------------------------------------------ Кузница
 const SHOP_ROWS = [...SHOP_ORDER, "back"];
-const shopRect = (i) => [18, 48 + i * 40, 384, i === SHOP_ORDER.length ? 26 : 36];
+const shopRect = (i) => [18, 44 + i * 29, 384, i === SHOP_ORDER.length ? 22 : 27];
 /** Телефон вертикально: список во весь экран под «чёлкой» с героем. */
 function shopRectTall(g, i) {
   const top = GAME_H + 12, gap = 10, backH = 60, msgH = 40, n = SHOP_ORDER.length;
-  const h = Math.max(64, Math.min(120, Math.floor((g.H - top - 16 - backH - msgH - gap * n) / n)));
+  const h = Math.max(44, Math.min(120, Math.floor((g.H - top - 16 - backH - msgH - gap * n) / n)));
   if (i === n) return [W / 2 - 160, top + n * (h + gap) + msgH, 320, backH];
   return [16, top + i * (h + gap), W - 32, h];
 }
@@ -1296,19 +1437,33 @@ class ShopScene extends Scene {
     this.message = msg;
     this.msgT = t;
   }
+  /** Платное оружие (гриф): оплата в магазине, вещь выдаётся персонажу. */
+  async buyPaid(key) {
+    const g = this.game, p = g.player, it = item(key);
+    if (this.busy) return;
+    this.busy = true;
+    const ok = await g.store.buy({ id: it.productId, name: it.name });
+    this.busy = false;
+    if (!ok) return g.store.lastError && this.say(g.store.lastError);
+    p.grantPaid(key);
+    p.save();
+    sfx.buy();
+    this.say(tf("Куплено: {name}! Оружие надето.", { name: it.name }));
+  }
   choose(key) {
     const g = this.game, p = g.player, it = item(key);
     if (key === "back") return g.change(new BonfireScene(g));
+    if (it.paid && !p.owned.includes(key)) return this.buyPaid(key);
     if (p.owned.includes(key)) {
       if (SWORDS[key]) {
         p.equip(key);
-        this.say(`Надет: ${it.name}`);
+        this.say(tf("Надет: {name}", { name: it.name }));
       } else {
-        this.say(`${it.name} уже действует`);
+        this.say(tf("{name} уже действует", { name: it.name }));
       }
     } else if (p.buy(key)) {
       sfx.level();
-      this.say(`Куплено: ${it.name}!${SWORDS[key] ? " Меч надет." : ""}`);
+      this.say(tf(SWORDS[key] ? "Куплено: {name}! Меч надет." : "Куплено: {name}!", { name: it.name }));
     } else {
       const [red, blue] = it.price;
       return this.say(`Не хватает камней: нужно ${blue ? `${blue} синих` : `${red} алых`}`);
@@ -1347,6 +1502,7 @@ class ShopScene extends Scene {
       if (p.sword === key) return ["НАДЕТ", COL.gold];
       return SWORDS[key] ? ["ВЗЯТЬ", COL.text] : ["ЕСТЬ", COL.gold];
     }
+    if (it.paid) return [this.game.store.price(it.productId), "rgb(120,220,255)"];
     let scol = it.price[1] ? "rgb(130,170,255)" : "rgb(240,110,110)";
     if (!p.canAfford(key)) scol = it.price[1] ? "rgb(65,85,128)" : "rgb(120,55,55)";
     return [priceText(key), scol];
@@ -1379,9 +1535,10 @@ class ShopScene extends Scene {
       if (key === "back") return g.button(r, "НАЗАД К КОСТРУ", { selected: sel, size: 16 });
       const it = item(key), [status, scol] = this.status(key);
       g.button(r, "", { selected: sel });
-      g.text(it.name, r[0] + 14, r[1] + r[3] / 2 - 26, 24, it.unique ? "rgb(150,190,255)" : sel ? COL.gold : COL.text);
-      g.text(it.desc, r[0] + 14, r[1] + r[3] / 2 + 8, 12, COL.dim);
-      g.text(status, r[0] + r[2] - 14, r[1] + r[3] / 2 + 6, 16, scol, "right");
+      const big = r[3] >= 70, nameFs = big ? 24 : 16;
+      g.text(it.name, r[0] + 14, r[1] + r[3] / 2 - nameFs - 2, nameFs, it.paid ? "rgb(255,150,150)" : it.unique ? "rgb(150,190,255)" : sel ? COL.gold : COL.text);
+      g.text(it.desc, r[0] + 14, r[1] + r[3] / 2 + 4, 12, COL.dim);
+      g.text(status, r[0] + r[2] - 14, r[1] + r[3] / 2 + 2, 16, scol, "right");
     });
     if (this.msgT > 0) {
       const b = this.rect(SHOP_ROWS.length - 1);
@@ -1391,9 +1548,9 @@ class ShopScene extends Scene {
   drawUi() {
     if (this.game.portrait) return this.drawTall();
     const g = this.game, p = g.player;
-    g.rect([10, 10, 400, 340], "rgba(10,6,14,0.85)");
+    g.rect([10, 6, 400, 352], "rgba(10,6,14,0.85)");
     g.ctx.strokeStyle = "rgb(90,64,50)";
-    g.ctx.strokeRect(10.5, 10.5, 399, 339);
+    g.ctx.strokeRect(10.5, 6.5, 399, 351);
     g.text("КУЗНИЦА", 22, 20, 16, COL.gold);
     g.gems(400, 24, p, "right");
     SHOP_ROWS.forEach((key, i) => {
@@ -1401,9 +1558,9 @@ class ShopScene extends Scene {
       if (key === "back") return g.button(r, "НАЗАД К КОСТРУ", { selected: sel });
       const it = item(key), [status, scol] = this.status(key);
       g.button(r, "", { selected: sel });
-      g.text(it.name, r[0] + 8, r[1] + 7, 8, it.unique ? "rgb(150,190,255)" : sel ? COL.gold : COL.text);
-      g.text(it.desc, r[0] + 8, r[1] + 21, 8, COL.dim);
-      g.text(status, r[0] + r[2] - 8, r[1] + 14, 8, scol, "right");
+      g.text(it.name, r[0] + 8, r[1] + 4, 8, it.paid ? "rgb(255,150,150)" : it.unique ? "rgb(150,190,255)" : sel ? COL.gold : COL.text);
+      g.text(it.desc, r[0] + 8, r[1] + 16, 8, COL.dim);
+      g.text(status, r[0] + r[2] - 8, r[1] + 10, 8, scol, "right");
     });
     // крупное превью героя; на непокупленной вещи — примерка
     if (this.drawHero(470, 2 * GROUND_ARENA, 4) === "ash") this.previewEmbers.draw(g.ctx);
@@ -1508,21 +1665,22 @@ class CosmeticsScene extends Scene {
       this.busy = true;
       const bought = await g.store.buy(it);
       this.busy = false;
-      if (!bought) return;
+      if (!bought) return g.store.lastError && this.say(g.store.lastError, 4);
       sfx.buy();
       g.profile.style[it.kind] = it.id; // купленное сразу надевается
       g.profile.save();
-      return this.say(`Куплено и надето: ${it.name}`, 4);
+      return this.say(tf("Куплено и надето: {name}", { name: it.name }), 4);
     }
     const on = g.profile.style[it.kind] === it.id;
     g.profile.style[it.kind] = on ? null : it.id;
     g.profile.save();
     sfx.click();
-    this.say(on ? `Снято: ${it.name}` : `Надето: ${it.name}`);
+    this.say(tf(on ? "Снято: {name}" : "Надето: {name}", { name: it.name }));
   }
   async restore() {
     const ids = await this.game.store.restore();
-    this.say(ids.length ? `Покупки восстановлены: ${ids.length}` : "Покупок пока нет");
+    this.game.syncPaid();
+    this.say(this.game.store.lastError || (ids.length ? `Покупки восстановлены: ${ids.length}` : "Покупок пока нет"));
   }
   handle() {
     const g = this.game, n = COS_ITEMS.length, L = this.layout();
@@ -1571,7 +1729,8 @@ class CosmeticsScene extends Scene {
     const pose = this.attacking ? "attack" : "idle", hx = this.attacking ? 34 : 28;
     const dummy = this.dummyFlash > 0 ? IMG.skeleton_hurt_0 : IMG.skeleton_idle_0;
     c.drawImage(dummy, 96, 80 - dummy.height);
-    c.drawImage(this.attacking ? IMG[`${hs}_attack_0`] : anim(`${hs}_idle`, t, 1.5, 2), hx, 48);
+    const heroSpr = this.attacking ? IMG[`${hs}_attack_0`] : anim(`${hs}_idle`, t, 1.5, 2);
+    c.drawImage(heroSpr, hx, 80 - heroSpr.height);
     this.aura.draw(c, skin, pose, hx, 48, t);
     if (this.slashT > 0) drawSlash(c, hx + 34, 61, p.sword, 1 - this.slashT / SLASH_TIME, skin);
     this.hitFx.draw(c);
@@ -1595,10 +1754,10 @@ class CosmeticsScene extends Scene {
     const [px, py, pw] = L.preview;
     g.rect([px, py, pw, 30], "rgba(10,6,14,0.75)");
     g.text("ЛАВКА ОБРАЗОВ", px + 10, py + 7, 16, COL.gold);
-    g.text("ТЕСТ: без оплаты", px + pw - 10, py + 11, 8, "rgb(120,220,255)", "right");
+    if (g.store.badge) g.text(g.store.badge, px + pw - 10, py + 11, 8, "rgb(120,220,255)", "right");
     // выбранная вещь — под «чёлкой» с превью
     g.text(it.name, 16, GAME_H + 8, 24, `rgb(${it.color.join(",")})`);
-    g.text(this.msgT > 0 ? this.message : `${it.desc} · только облик`, 16, GAME_H + 40, 12, this.msgT > 0 ? COL.gold : COL.dim);
+    g.text(this.msgT > 0 ? this.message : tf("{desc} · только облик", { desc: it.desc }), 16, GAME_H + 40, 12, this.msgT > 0 ? COL.gold : COL.dim);
     for (const row of L.rows) {
       if (row.head) {
         g.text(row.head, 18, row.y + 6, 12, COL.dim);
@@ -1623,7 +1782,7 @@ class CosmeticsScene extends Scene {
     if (this.game.portrait) return this.drawTall();
     const g = this.game, it = this.item, owned = g.store.owns(it.id);
     g.text("ЛАВКА ОБРАЗОВ", 14, 14, 16, COL.gold);
-    g.text("ТЕСТ: оплата не списывается", W - 12, 18, 8, "rgb(120,220,255)", "right");
+    if (g.store.badge) g.text(g.store.badge, W - 12, 18, 8, "rgb(120,220,255)", "right");
     for (const row of COS_LAYOUT) {
       if (row.head) {
         g.text(row.head, 14, row.y + 3, 8, COL.dim);
@@ -1748,9 +1907,10 @@ class LeaderboardScene extends Scene {
       if (r.source === "online") [status, scol] = ["Онлайн", "rgb(120,220,120)"];
       else if (r.source === "cache") {
         const when = r.at ? new Date(r.at).toLocaleDateString("ru-RU") : "";
-        [status, scol] = [`Нет сети: сохранённая таблица ${when}`.trim(), "rgb(230,180,90)"];
-      } else [status, scol] = ["Сервер рейтинга не подключён: показан ваш результат", "rgb(230,180,90)"];
-      if (r.pending) status += " · ваш результат отправится при появлении сети";
+        [status, scol] = [tf("Нет сети: сохранённая таблица {when}", { when }).trim(), "rgb(230,180,90)"];
+      } else if (g.leaderboard.offline) [status, scol] = ["Онлайн-рейтинг появится в следующей версии: показан ваш результат", "rgb(230,180,90)"];
+      else [status, scol] = ["Сервер рейтинга не подключён: показан ваш результат", "rgb(230,180,90)"];
+      if (r.pending) status = tr(status) + tr(" · ваш результат отправится при появлении сети");
     }
     const [sy, swrap, sstep, ssize] = L.status;
     g.wrap(status, swrap).forEach((line, i) => g.text(line, 14, sy + i * sstep, ssize, scol));
@@ -1778,7 +1938,7 @@ class LeaderboardScene extends Scene {
         g.text(`${row.wave}`, c4, y, fs, col);
       });
     }
-    g.button(L.name, `ИМЯ: ${g.profile.name}`, { size: L.btnFs });
+    g.button(L.name, tf("ИМЯ: {name}", { name: g.profile.name }), { size: L.btnFs });
     g.button(L.refresh, this.loading ? "..." : "ОБНОВИТЬ", { size: L.btnFs });
     g.button(L.back, "НАЗАД", { size: L.btnFs });
   }
@@ -1798,7 +1958,11 @@ class CameraScene extends Scene {
     const g = this.game;
     if (moves.some((m) => m === "pushup" || m === "squat" || m === "jack")) sfx.rep();
     if (g.key("Escape", "Enter") || g.tapped([W / 2 - 60, GAME_H - 30, 120, 22])) g.change(new SettingsScene(g));
-    if (!g.motion.ok && !g.motion.starting && g.tapped([20, 300, 200, 24])) g.motion.start();
+    if (g.tapped([20, 300, 200, 24])) {
+      if (g.motion.denied && isNative()) openAppSettings(); // доступ запрещён — включается только в Настройках iOS
+      else if (!g.motion.ok && !g.motion.starting) g.motion.start();
+      else if (g.motion.ok && g.motion.status !== "камера активна") g.motion.resume();
+    }
   }
   draw(c) {
     c.drawImage(IMG.arena_bg, 0, 0);
@@ -1810,9 +1974,9 @@ class CameraScene extends Scene {
     g.text("КАМЕРА И СОВЕТЫ", W / 2, 12, 16, COL.gold, "center");
     const fmt = (v) => (v == null ? "-" : `${Math.round(v)}°`);
     const x = 20;
-    g.text(`Статус: ${g.motion.status}`, x, 40, 8);
-    g.text(`Поза: ${d.posture}`, x, 54, 8);
-    g.text(`Колени ${fmt(d.knee)}  Локти ${fmt(d.elbow)}  Наклон ${fmt(d.tilt)}`, x, 68, 8, COL.dim);
+    g.text(tf("Статус: {status}", { status: g.motion.status }), x, 40, 8);
+    g.text(tf("Поза: {pose}", { pose: d.posture }), x, 54, 8);
+    g.text(tf("Колени {knee}  Локти {elbow}  Наклон {tilt}", { knee: fmt(d.knee), elbow: fmt(d.elbow), tilt: fmt(d.tilt) }), x, 68, 8, COL.dim);
     const counts = g.motion.ok ? d.counts : g.manualCounts;
     ["pushup", "squat", "jack"].forEach((ex, i) => g.text(`${NAMES[ex]}: ${counts[ex]}`, x, 88 + i * 14, 8));
     const tips = [
@@ -1824,7 +1988,10 @@ class CameraScene extends Scene {
     ];
     let y = 140;
     for (const tip of tips) for (const l of g.wrap(tip, g.portrait ? 74 : 56)) { g.text(l, x, y, 8, COL.dim); y += 12; }
-    if (!g.motion.ok && !g.motion.starting) g.button([20, 300, 200, 24], "ВКЛЮЧИТЬ КАМЕРУ");
+    if (g.motion.denied && isNative()) g.button([20, 300, 200, 24], "РАЗРЕШИТЬ В НАСТРОЙКАХ");
+    else if ((!g.motion.ok && !g.motion.starting) || (g.motion.ok && g.motion.status !== "камера активна")) {
+      g.button([20, 300, 200, 24], "ВКЛЮЧИТЬ КАМЕРУ");
+    }
     g.button([W / 2 - 60, GAME_H - 30, 120, 22], "НАЗАД");
     if (!g.portrait) {
       g.cameraWidget();
@@ -1846,7 +2013,7 @@ function settingsLayout(g) {
       title: 16, fs: { title: 24, label: 12, btn: 12, sign: 16 },
       volume: row(60), alert: row(108), vibLabel: [40, 168], vib: [300, 156, 300, 36],
       test: [40, 204, 260, 34], tg: [320, 204, 280, 34], camera: [40, 256, 270, 36], support: [330, 256, 270, 36],
-      back: [W / 2 - 90, 308, 180, 34],
+      lang: [330, 308, 270, 34], back: [40, 308, 270, 34],
     };
   }
   const row = (y) => ({ label: [24, y], minus: [24, y + 36, 88, 72], plus: [W - 112, y + 36, 88, 72], bar: [128, y + 52, W - 256, 40] });
@@ -1854,8 +2021,8 @@ function settingsLayout(g) {
   return {
     title: 36, fs: { title: 32, label: 24, btn: 24, sign: 32 },
     volume: row(110), alert: row(250), vibLabel: [24, 392], vib: [24, 428, W - 48, 74],
-    test: btn(0), tg: btn(1), camera: btn(2), support: btn(3),
-    back: [W / 2 - 160, Math.max(btn(4)[1] + 16, g.H - 100), 320, 74],
+    test: btn(0), tg: btn(1), camera: btn(2), support: btn(3), lang: btn(4),
+    back: [W / 2 - 160, Math.max(btn(5)[1] + 16, g.H - 100), 320, 74],
   };
 }
 
@@ -1881,7 +2048,12 @@ class SettingsScene extends Scene {
     if (g.tapped(L.test)) sfx.alert();
     if (g.tapped(L.tg)) {
       sfx.click();
-      window.open(TELEGRAM_URL, "_blank", "noopener"); // на телефоне откроется приложение Telegram
+      openUrl(TELEGRAM_URL); // на телефоне откроется приложение Telegram
+    }
+    if (g.tapped(L.lang)) { // русский <-> английский
+      this.set("lang", getLang() === "ru" ? "en" : "ru");
+      setLang(g.settings.lang);
+      sfx.click();
     }
     if (g.tapped(L.camera)) return g.change(new CameraScene(g));
     if (g.tapped(L.support)) return g.change(new SupportScene(g));
@@ -1895,6 +2067,7 @@ class SettingsScene extends Scene {
   /** Строка-шкала: подпись, «−», деления, «+». */
   slider(row, fs, label, k, value) {
     const g = this.game;
+    value = tr(value); // ширина подложки — по переведённому слову
     g.text(label, row.label[0], row.label[1], fs.label);
     g.button(row.minus, "-", { size: fs.sign });
     g.button(row.plus, "+", { size: fs.sign });
@@ -1912,12 +2085,13 @@ class SettingsScene extends Scene {
     this.slider(L.volume, fs, "Громкость", st.volume, `${Math.round(st.volume * 100)}%`);
     const al = ALERT_LEVELS.find(([v]) => v === st.alert) || ALERT_LEVELS[2];
     this.slider(L.alert, fs, "Сигнал «приседай»", st.alert / 1.5, al[1]);
-    g.text("Вибрация (Android)", L.vibLabel[0], L.vibLabel[1], fs.label);
+    g.text(isNative() ? "Вибрация" : "Вибрация (Android)", L.vibLabel[0], L.vibLabel[1], fs.label);
     g.button(L.vib, st.vibrate ? "ВКЛ" : "ВЫКЛ", { size: fs.btn, selected: st.vibrate });
     g.button(L.test, "ПРОВЕРИТЬ СИГНАЛ", { size: fs.btn });
     g.button(L.tg, "Наш Telegram", { size: fs.btn, color: "rgb(120,200,255)", border: "rgb(70,140,200)" });
     g.button(L.camera, "Камера и советы", { size: fs.btn });
     g.button(L.support, "Поддержать проект", { size: fs.btn, color: "rgb(255,150,150)" });
+    g.button(L.lang, `${tr("Язык")}: ${LANGS[getLang()]}`, { size: fs.btn, color: "rgb(150,220,150)" });
     g.button(L.back, "НАЗАД", { size: fs.btn });
   }
 }
@@ -1993,7 +2167,7 @@ class SupportScene extends Scene {
       g.button(r, "", { selected: i === 0 });
       g.text(tip.name, r[0] + 16, r[1] + r[3] / 2 - fs.name - 2, fs.name, COL.gold);
       g.text(tip.desc, r[0] + 16, r[1] + r[3] / 2 + 6, fs.desc, COL.dim);
-      g.text(tip.price, r[0] + r[2] - 16, r[1] + (r[3] - fs.price) / 2, fs.price, "rgb(120,220,255)", "right");
+      g.text(g.store.tipPrice(tip), r[0] + r[2] - 16, r[1] + (r[3] - fs.price) / 2, fs.price, "rgb(120,220,255)", "right");
     });
     const [my, msize] = L.msg;
     if (this.msgT > 0) g.text("Спасибо, рыцарь! Костёр горит ярче.", W / 2, my, msize, COL.gold, "center");
@@ -2008,12 +2182,14 @@ export async function boot() {
   const gate = document.getElementById("gate");
   const gateStatus = document.getElementById("gate-status");
   try {
-    await Promise.all([loadImages(), document.fonts.load(`16px ${FONT}`, "АБВ")]);
+    // в приложении: вернуть сохранения из нативной копии, если данные браузера очищены
+    await Promise.all([loadImages(), document.fonts.load(`16px ${FONT}`, "АБВ"), document.fonts.load(`16px ${FONT}`, "ABC"), restoreBackup()]);
   } catch (e) {
-    gateStatus.textContent = "Не удалось загрузить графику. Обновите страницу.";
+    gateStatus.textContent = tr("Не удалось загрузить графику. Обновите страницу.");
     return;
   }
   gateStatus.textContent = "";
+  for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = tr(el.textContent.trim().replace(/\s+/g, " "));
   gate.classList.add("ready");
 
   const start = async (useCamera) => {
@@ -2024,11 +2200,7 @@ export async function boot() {
     } catch (e) { /* iOS Safari не умеет — не страшно */ }
     initAudio();
     // Экран не гаснет на тренировке; после сворачивания блокировку нужно взять заново
-    const lockScreen = async () => {
-      try {
-        if (navigator.wakeLock && document.visibilityState === "visible") await navigator.wakeLock.request("screen");
-      } catch (e) { /* не поддерживается */ }
-    };
+    const lockScreen = () => keepAwake();
     lockScreen();
     document.addEventListener("visibilitychange", lockScreen);
     const game = new Game(canvas, useCamera);

@@ -1,7 +1,8 @@
 // Рейтинг игроков по побеждённым боссам и уровню (сервер — Supabase, см. config.js).
 // Игра не зависит от сети: результат ставится в очередь и уходит, когда появится интернет;
 // без сети показывается последняя сохранённая таблица, без сервера — только свой результат.
-import { LEADERBOARD } from "./config.js";
+import { IOS, LEADERBOARD } from "./config.js";
+import { isIOS } from "./platform.js";
 import { loadJSON, saveJSON } from "./storage.js";
 
 const QUEUE_KEY = "ash-and-iron-lb-queue";
@@ -12,8 +13,9 @@ const TOP = 50;
 const byRank = (a, b) => b.bosses - a.bosses || b.level - a.level || b.wave - a.wave;
 
 export class Leaderboard {
-  constructor(config = LEADERBOARD, fetchImpl = globalThis.fetch?.bind(globalThis)) {
+  constructor(config = LEADERBOARD, fetchImpl = globalThis.fetch?.bind(globalThis), { offline = isIOS() && !IOS.leaderboardOnline } = {}) {
     this.config = config;
+    this.offline = offline; // iOS до исправления правил сервера: только свой результат, без сети
     this.fetch = fetchImpl;
     this.pending = loadJSON(QUEUE_KEY, null); // последний неотправленный результат
     this.cache = loadJSON(CACHE_KEY, { rows: [], at: 0 });
@@ -22,6 +24,7 @@ export class Leaderboard {
   }
 
   get configured() {
+    if (this.offline) return false;
     return !!(this.config.url && this.config.anonKey && this.fetch);
   }
 

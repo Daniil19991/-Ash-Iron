@@ -1,4 +1,5 @@
 // Модальные окна поверх игры (обычный HTML: так на телефоне работает экранная клавиатура).
+import { tr } from "./i18n.js";
 
 function modal(build) {
   return new Promise((resolve) => {
@@ -21,7 +22,7 @@ function modal(build) {
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
-  if (text != null) e.textContent = text;
+  if (text != null) e.textContent = tr(text);
   return e;
 }
 
